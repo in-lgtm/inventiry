@@ -30,7 +30,7 @@ streamlit run app.py
 Open the URL Streamlit prints (usually http://localhost:8501). Log in with:
 
 ```
-Clearnanotech12@
+
 ```
 
 The database (`inventory.db`) and the `images/` / `datasheets/` folders are
