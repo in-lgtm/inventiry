@@ -1,9 +1,7 @@
 import io
 import os
 import re
-import shutil
 import sqlite3
-import tempfile
 from datetime import datetime
 import pandas as pd
 import streamlit as st
@@ -23,10 +21,9 @@ DB_FILE = os.path.join(BASE_DIR, "inventory.db")
 IMAGES_DIR = os.path.join(BASE_DIR, "images")
 DATASHEETS_DIR = os.path.join(BASE_DIR, "datasheets")
 
-# Resolve folder vs file path conflicts cleanly
 for folder_path in [IMAGES_DIR, DATASHEETS_DIR]:
     if os.path.exists(folder_path) and not os.path.isdir(folder_path):
-        os.remove(folder_path)  # Remove file blocking directory creation
+        os.remove(folder_path)
     os.makedirs(folder_path, exist_ok=True)
 
 
@@ -34,7 +31,6 @@ for folder_path in [IMAGES_DIR, DATASHEETS_DIR]:
 # DATABASE CONNECTION & MUTATION HELPERS
 # -----------------------------------------------------------------------------
 def get_db_connection():
-    """Returns a fresh SQLite connection with WAL mode for reliable writes."""
     conn = sqlite3.connect(DB_FILE, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL;")
@@ -42,7 +38,6 @@ def get_db_connection():
 
 
 def execute_db_query(query, params=()):
-    """Executes a write query, commits immediately, and closes connection."""
     conn = get_db_connection()
     try:
         cursor = conn.cursor()
@@ -55,357 +50,349 @@ def execute_db_query(query, params=()):
 
 
 def sanitize_filename(name):
-    """Sanitizes names to be safe for filenames and Excel sheet titles."""
     clean = re.sub(r"[^\w\-_]", "_", str(name))
     return clean[:30]
 
 
 def init_db():
-    """Initializes tables and seeds default data if inventory.db is new."""
-    conn = get_db_connection()
-    cursor = conn.cursor()
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
 
-    # Check if products table exists
-    cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='products'")
-    table_exists = cursor.fetchone()
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='products'")
+        table_exists = cursor.fetchone()
 
-    if table_exists:
-        cursor.execute("PRAGMA table_info(products)")
-        columns = [column[1] for column in cursor.fetchall()]
-        required_cols = ["sds_hazard_class", "source_origin", "batch_lot", "where_used"]
-        
-        # If schema is missing new fields, recreate cleanly
-        if not all(col in columns for col in required_cols):
-            cursor.execute("DROP TABLE IF EXISTS products")
-            cursor.execute("DROP TABLE IF EXISTS stock_entries")
+        if table_exists:
+            cursor.execute("PRAGMA table_info(products)")
+            columns = [column[1] for column in cursor.fetchall()]
+            required_cols = ["sds_hazard_class", "source_origin", "batch_lot", "where_used"]
+            if not all(col in columns for col in required_cols):
+                cursor.execute("DROP TABLE IF EXISTS products")
+                cursor.execute("DROP TABLE IF EXISTS stock_entries")
 
-    # Table 1: Products
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS products (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            icon TEXT DEFAULT '📦',
-            sku TEXT UNIQUE NOT NULL,
-            product TEXT NOT NULL,
-            characteristics TEXT,
-            suppliers TEXT,
-            price REAL DEFAULT 0.0,
-            discount REAL DEFAULT 0.0,
-            transport_price REAL DEFAULT 0.0,
-            expiring_date TEXT,
-            delivery_time INTEGER DEFAULT 5,
-            ubication TEXT,
-            monthly_usage INTEGER DEFAULT 0,
-            min_stock INTEGER DEFAULT 0,
-            quantity REAL DEFAULT 0.0,
-            description TEXT,
-            where_used TEXT,
-            source_origin TEXT,
-            batch_lot TEXT,
-            sds_hazard_class TEXT,
-            photo_path TEXT,
-            datasheet_path TEXT
-        )
-    """)
-
-    # Table 2: Multiple Entries / Stock History
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS stock_entries (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            product_id INTEGER NOT NULL,
-            entry_date TEXT NOT NULL,
-            quantity REAL NOT NULL,
-            price REAL NOT NULL,
-            note TEXT,
-            FOREIGN KEY (product_id) REFERENCES products (id) ON DELETE CASCADE
-        )
-    """)
-
-    cursor.execute("SELECT COUNT(*) FROM products")
-    if cursor.fetchone()[0] == 0:
-        seed_data = [
-            (
-                "🏷️",
-                "MAT-VEL-401",
-                "Velcro 401 Black",
-                "1 Box = 14 U | Breakdown: 1 Box x 350 mts + 8 U x 25 mts",
-                "Velcro Industrial",
-                120.00,
-                5.0,
-                10.00,
-                "2030-12-31",
-                5,
-                "Zone A - Rack 01",
-                200,
-                250,
-                550.0,
-                "1 Box x 350 mts (350m) + 8 U x 25 mts (200m). Total: 550 mts.",
-                "Vertical/horizontal textile fastening and modular panels.",
-                "Barcelona, Spain",
-                "LOT-VEL401-26",
-                "Non-hazardous",
-            ),
-            (
-                "🏷️",
-                "MAT-VEL-758",
-                "Velcro 758 Black",
-                "1 Box = 11 U | Breakdown: 20 Box x 495 mts + 7 U x 45 mts",
-                "Velcro Industrial",
-                180.00,
-                8.0,
-                15.00,
-                "2030-12-31",
-                5,
-                "Zone A - Rack 02",
-                1500,
-                2000,
-                10215.0,
-                "20 Box x 495 mts (9,900m) + 7 U x 45 mts (315m). Total: 10,215 mts.",
-                "Large roof closure and insulating curtains.",
-                "Barcelona, Spain",
-                "LOT-VEL758-26",
-                "Non-hazardous",
-            ),
-            (
-                "🧪",
-                "MAT-GLU-TUN400",
-                "Glue Tunsan 400 ml",
-                "1 Box = 28 U | Breakdown: 23 Box x 28 U + 10 U loose",
-                "Tunsan Chemical Supplies",
-                8.50,
-                5.0,
-                0.80,
-                "2027-06-30",
-                4,
-                "Zone B - Shelf 01",
-                150,
-                100,
-                654.0,
-                "23 Box x 28 U (644 U) + 10 U loose. Total: 654 U.",
-                "Fast housing sealing and light adhesion.",
-                "Valencia, Spain",
-                "LOT-TUN-400-A",
-                "Class 3 Flammable",
-            ),
-            (
-                "🧪",
-                "MAT-GLU-HUI600",
-                "Glue HUITIAN 600 ml",
-                "1 Box = 20 U | Total Stock: 15 U loose",
-                "Huitian Adhesives",
-                12.00,
-                0.0,
-                1.20,
-                "2027-04-15",
-                7,
-                "Zone B - Shelf 02",
-                30,
-                20,
-                15.0,
-                "15 U loose. Total: 15 U.",
-                "Elastic and industrial partition sealing.",
-                "Hubei, China",
-                "LOT-HUI-600X",
-                "Irritante",
-            ),
-            (
-                "🧪",
-                "MAT-GLU-DOW600",
-                "Glue DOW 600 ml",
-                "1 Box = 20 U | Total Stock: 13 U loose",
-                "Dow Chemical Europe",
-                16.50,
-                10.0,
-                1.50,
-                "2027-09-30",
-                3,
-                "Zone B - Shelf 03",
-                40,
-                25,
-                13.0,
-                "13 U loose. Total: 13 U.",
-                "Glass and structural joint sealing.",
-                "Wiesbaden, Germany",
-                "LOT-DOW-600D",
-                "Low VOC",
-            ),
-            (
-                "🧪",
-                "MAT-GLU-SEA600",
-                "Glue SEAL 600 ml",
-                "1 Box = 12 U | Breakdown: 3 Box x 12 U",
-                "Seal Industrial Solutions",
-                11.00,
-                0.0,
-                1.00,
-                "2027-08-10",
-                5,
-                "Zone B - Shelf 04",
-                25,
-                15,
-                36.0,
-                "3 Box x 12 U. Total: 36 U.",
-                "Waterproof sealing of frames and moldings.",
-                "Milan, Italy",
-                "LOT-SEA-36X",
-                "Non-hazardous",
-            ),
-            (
-                "⚡",
-                "MAT-PV-TRAD",
-                "PV TRADICIONAL",
-                "Standard Photovoltaic Module | Total Stock: 23 U",
-                "PV Solar Tech",
-                140.00,
-                12.0,
-                12.00,
-                "2035-12-31",
-                10,
-                "Zone C - Rack PV1",
-                15,
-                10,
-                23.0,
-                "23 U. Total: 23 U.",
-                "Traditional solar roof installation.",
-                "Madrid, Spain",
-                "LOT-PV-TRAD-01",
-                "Electrical",
-            ),
-            (
-                "⚡",
-                "MAT-PV-560W",
-                "PV 560W",
-                "High-Efficiency PV Panel 560W | Total Stock: 5 U",
-                "PV Solar Tech",
-                210.00,
-                15.0,
-                18.00,
-                "2035-12-31",
-                10,
-                "Zone C - Rack PV2",
-                8,
-                10,
-                5.0,
-                "5 U. Total: 5 U.",
-                "High-density solar power generation.",
-                "Jiangsu, China",
-                "LOT-PV-560W-26",
-                "Electrical",
-            ),
-            (
-                "📦",
-                "MAT-PV-WGV",
-                "PV White Glue Velcro Vertical",
-                "White PV Panel with Integrated Vertical Velcro | Total Stock: 127 U",
-                "Custom Solar Flex",
-                165.00,
-                10.0,
-                14.00,
-                "2032-12-31",
-                7,
-                "Zone C - Rack PV3",
-                50,
-                30,
-                127.0,
-                "127 U. Total: 127 U.",
-                "Fast vertical photovoltaic mounting on canvas.",
-                "Porto, Portugal",
-                "LOT-PV-WGV-127",
-                "Non-hazardous",
-            ),
-            (
-                "📦",
-                "MAT-PV-WGH",
-                "PV White Glue Velcro Horizontal",
-                "White PV Panel with Integrated Horizontal Velcro | Total Stock: 2 U",
-                "Custom Solar Flex",
-                165.00,
-                10.0,
-                14.00,
-                "2032-12-31",
-                7,
-                "Zone C - Rack PV3",
-                20,
-                15,
-                2.0,
-                "2 U. Total: 2 U.",
-                "Fast horizontal photovoltaic mounting.",
-                "Porto, Portugal",
-                "LOT-PV-WGH-02",
-                "Non-hazardous",
-            ),
-            (
-                "📦",
-                "MAT-PV-WHITE",
-                "PV White",
-                "Standard White Flex PV Module | Total Stock: 110 U",
-                "Custom Solar Flex",
-                150.00,
-                8.0,
-                12.00,
-                "2032-12-31",
-                6,
-                "Zone C - Rack PV4",
-                40,
-                25,
-                110.0,
-                "110 U. Total: 110 U.",
-                "Architectural white photovoltaic integration.",
-                "Porto, Portugal",
-                "LOT-PV-W-110",
-                "Non-hazardous",
-            ),
-            (
-                "📦",
-                "MAT-PV-BLACK",
-                "PV Black",
-                "Full Black Flex PV Module | Total Stock: 32 U",
-                "Custom Solar Flex",
-                155.00,
-                8.0,
-                12.00,
-                "2032-12-31",
-                6,
-                "Zone C - Rack PV4",
-                30,
-                20,
-                32.0,
-                "32 U. Total: 32 U.",
-                "Aesthetic Full Black installation on dark surfaces.",
-                "Porto, Portugal",
-                "LOT-PV-B-32",
-                "Non-hazardous",
-            ),
-        ]
-
-        for item in seed_data:
-            cursor.execute(
-                """
-                INSERT INTO products (
-                    icon, sku, product, characteristics, suppliers, price, discount, transport_price,
-                    expiring_date, delivery_time, ubication, monthly_usage, min_stock, quantity,
-                    description, where_used, source_origin, batch_lot, sds_hazard_class
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-                item,
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS products (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                icon TEXT DEFAULT '📦',
+                sku TEXT UNIQUE NOT NULL,
+                product TEXT NOT NULL,
+                characteristics TEXT,
+                suppliers TEXT,
+                price REAL DEFAULT 0.0,
+                discount REAL DEFAULT 0.0,
+                transport_price REAL DEFAULT 0.0,
+                expiring_date TEXT,
+                delivery_time INTEGER DEFAULT 5,
+                ubication TEXT,
+                monthly_usage INTEGER DEFAULT 0,
+                min_stock INTEGER DEFAULT 0,
+                quantity REAL DEFAULT 0.0,
+                description TEXT,
+                where_used TEXT,
+                source_origin TEXT,
+                batch_lot TEXT,
+                sds_hazard_class TEXT,
+                photo_path TEXT,
+                datasheet_path TEXT
             )
+        """)
 
-            prod_id = cursor.lastrowid
-            cursor.execute(
-                """
-                INSERT INTO stock_entries (product_id, entry_date, quantity, price, note)
-                VALUES (?, ?, ?, ?, ?)
-            """,
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS stock_entries (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                product_id INTEGER NOT NULL,
+                entry_date TEXT NOT NULL,
+                quantity REAL NOT NULL,
+                price REAL NOT NULL,
+                note TEXT,
+                FOREIGN KEY (product_id) REFERENCES products (id) ON DELETE CASCADE
+            )
+        """)
+
+        cursor.execute("SELECT COUNT(*) FROM products")
+        if cursor.fetchone()[0] == 0:
+            seed_data = [
                 (
-                    prod_id,
-                    datetime.now().strftime("%Y-%m-%d"),
-                    item[13],
-                    item[5],
-                    "Initial Batch",
+                    "🏷️",
+                    "MAT-VEL-401",
+                    "Velcro 401 Black",
+                    "1 Box = 14 U | Breakdown: 1 Box x 350 mts + 8 U x 25 mts",
+                    "Velcro Industrial",
+                    120.00,
+                    5.0,
+                    10.00,
+                    "2030-12-31",
+                    5,
+                    "Zone A - Rack 01",
+                    200,
+                    250,
+                    550.0,
+                    "1 Box x 350 mts (350m) + 8 U x 25 mts (200m). Total: 550 mts.",
+                    "Vertical/horizontal textile fastening and modular panels.",
+                    "Barcelona, Spain",
+                    "LOT-VEL401-26",
+                    "Non-hazardous",
                 ),
-            )
+                (
+                    "🏷️",
+                    "MAT-VEL-758",
+                    "Velcro 758 Black",
+                    "1 Box = 11 U | Breakdown: 20 Box x 495 mts + 7 U x 45 mts",
+                    "Velcro Industrial",
+                    180.00,
+                    8.0,
+                    15.00,
+                    "2030-12-31",
+                    5,
+                    "Zone A - Rack 02",
+                    1500,
+                    2000,
+                    10215.0,
+                    "20 Box x 495 mts (9,900m) + 7 U x 45 mts (315m). Total: 10,215 mts.",
+                    "Large roof closure and insulating curtains.",
+                    "Barcelona, Spain",
+                    "LOT-VEL758-26",
+                    "Non-hazardous",
+                ),
+                (
+                    "🧪",
+                    "MAT-GLU-TUN400",
+                    "Glue Tunsan 400 ml",
+                    "1 Box = 28 U | Breakdown: 23 Box x 28 U + 10 U loose",
+                    "Tunsan Chemical Supplies",
+                    8.50,
+                    5.0,
+                    0.80,
+                    "2027-06-30",
+                    4,
+                    "Zone B - Shelf 01",
+                    150,
+                    100,
+                    654.0,
+                    "23 Box x 28 U (644 U) + 10 U loose. Total: 654 U.",
+                    "Fast housing sealing and light adhesion.",
+                    "Valencia, Spain",
+                    "LOT-TUN-400-A",
+                    "Class 3 Flammable",
+                ),
+                (
+                    "🧪",
+                    "MAT-GLU-HUI600",
+                    "Glue HUITIAN 600 ml",
+                    "1 Box = 20 U | Total Stock: 15 U loose",
+                    "Huitian Adhesives",
+                    12.00,
+                    0.0,
+                    1.20,
+                    "2027-04-15",
+                    7,
+                    "Zone B - Shelf 02",
+                    30,
+                    20,
+                    15.0,
+                    "15 U loose. Total: 15 U.",
+                    "Elastic and industrial partition sealing.",
+                    "Hubei, China",
+                    "LOT-HUI-600X",
+                    "Irritante",
+                ),
+                (
+                    "🧪",
+                    "MAT-GLU-DOW600",
+                    "Glue DOW 600 ml",
+                    "1 Box = 20 U | Total Stock: 13 U loose",
+                    "Dow Chemical Europe",
+                    16.50,
+                    10.0,
+                    1.50,
+                    "2027-09-30",
+                    3,
+                    "Zone B - Shelf 03",
+                    40,
+                    25,
+                    13.0,
+                    "13 U loose. Total: 13 U.",
+                    "Glass and structural joint sealing.",
+                    "Wiesbaden, Germany",
+                    "LOT-DOW-600D",
+                    "Low VOC",
+                ),
+                (
+                    "🧪",
+                    "MAT-GLU-SEA600",
+                    "Glue SEAL 600 ml",
+                    "1 Box = 12 U | Breakdown: 3 Box x 12 U",
+                    "Seal Industrial Solutions",
+                    11.00,
+                    0.0,
+                    1.00,
+                    "2027-08-10",
+                    5,
+                    "Zone B - Shelf 04",
+                    25,
+                    15,
+                    36.0,
+                    "3 Box x 12 U. Total: 36 U.",
+                    "Waterproof sealing of frames and moldings.",
+                    "Milan, Italy",
+                    "LOT-SEA-36X",
+                    "Non-hazardous",
+                ),
+                (
+                    "⚡",
+                    "MAT-PV-TRAD",
+                    "PV TRADICIONAL",
+                    "Standard Photovoltaic Module | Total Stock: 23 U",
+                    "PV Solar Tech",
+                    140.00,
+                    12.0,
+                    12.00,
+                    "2035-12-31",
+                    10,
+                    "Zone C - Rack PV1",
+                    15,
+                    10,
+                    23.0,
+                    "23 U. Total: 23 U.",
+                    "Traditional solar roof installation.",
+                    "Madrid, Spain",
+                    "LOT-PV-TRAD-01",
+                    "Electrical",
+                ),
+                (
+                    "⚡",
+                    "MAT-PV-560W",
+                    "PV 560W",
+                    "High-Efficiency PV Panel 560W | Total Stock: 5 U",
+                    "PV Solar Tech",
+                    210.00,
+                    15.0,
+                    18.00,
+                    "2035-12-31",
+                    10,
+                    "Zone C - Rack PV2",
+                    8,
+                    10,
+                    5.0,
+                    "5 U. Total: 5 U.",
+                    "High-density solar power generation.",
+                    "Jiangsu, China",
+                    "LOT-PV-560W-26",
+                    "Electrical",
+                ),
+                (
+                    "📦",
+                    "MAT-PV-WGV",
+                    "PV White Glue Velcro Vertical",
+                    "White PV Panel with Integrated Vertical Velcro | Total Stock: 127 U",
+                    "Custom Solar Flex",
+                    165.00,
+                    10.0,
+                    14.00,
+                    "2032-12-31",
+                    7,
+                    "Zone C - Rack PV3",
+                    50,
+                    30,
+                    127.0,
+                    "127 U. Total: 127 U.",
+                    "Fast vertical photovoltaic mounting on canvas.",
+                    "Porto, Portugal",
+                    "LOT-PV-WGV-127",
+                    "Non-hazardous",
+                ),
+                (
+                    "📦",
+                    "MAT-PV-WGH",
+                    "PV White Glue Velcro Horizontal",
+                    "White PV Panel with Integrated Horizontal Velcro | Total Stock: 2 U",
+                    "Custom Solar Flex",
+                    165.00,
+                    10.0,
+                    14.00,
+                    "2032-12-31",
+                    7,
+                    "Zone C - Rack PV3",
+                    20,
+                    15,
+                    2.0,
+                    "2 U. Total: 2 U.",
+                    "Fast horizontal photovoltaic mounting.",
+                    "Porto, Portugal",
+                    "LOT-PV-WGH-02",
+                    "Non-hazardous",
+                ),
+                (
+                    "📦",
+                    "MAT-PV-WHITE",
+                    "PV White",
+                    "Standard White Flex PV Module | Total Stock: 110 U",
+                    "Custom Solar Flex",
+                    150.00,
+                    8.0,
+                    12.00,
+                    "2032-12-31",
+                    6,
+                    "Zone C - Rack PV4",
+                    40,
+                    25,
+                    110.0,
+                    "110 U. Total: 110 U.",
+                    "Architectural white photovoltaic integration.",
+                    "Porto, Portugal",
+                    "LOT-PV-W-110",
+                    "Non-hazardous",
+                ),
+                (
+                    "📦",
+                    "MAT-PV-BLACK",
+                    "PV Black",
+                    "Full Black Flex PV Module | Total Stock: 32 U",
+                    "Custom Solar Flex",
+                    155.00,
+                    8.0,
+                    12.00,
+                    "2032-12-31",
+                    6,
+                    "Zone C - Rack PV4",
+                    30,
+                    20,
+                    32.0,
+                    "32 U. Total: 32 U.",
+                    "Aesthetic Full Black installation on dark surfaces.",
+                    "Porto, Portugal",
+                    "LOT-PV-B-32",
+                    "Non-hazardous",
+                ),
+            ]
 
-    conn.commit()
-    conn.close()
+            for item in seed_data:
+                cursor.execute(
+                    """
+                    INSERT INTO products (
+                        icon, sku, product, characteristics, suppliers, price, discount, transport_price,
+                        expiring_date, delivery_time, ubication, monthly_usage, min_stock, quantity,
+                        description, where_used, source_origin, batch_lot, sds_hazard_class
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                    item,
+                )
+
+                prod_id = cursor.lastrowid
+                cursor.execute(
+                    """
+                    INSERT INTO stock_entries (product_id, entry_date, quantity, price, note)
+                    VALUES (?, ?, ?, ?, ?)
+                """,
+                    (
+                        prod_id,
+                        datetime.now().strftime("%Y-%m-%d"),
+                        item[13],
+                        item[5],
+                        "Initial Batch",
+                    ),
+                )
+
+        conn.commit()
 
 
 init_db()
@@ -635,16 +622,18 @@ tab1, tab2 = st.tabs([txt["tab1"], txt["tab2"]])
 
 # TAB 1: CARDS VIEW
 with tab1:
+    # INSTANT ADD PRODUCT WITH AUTO-MODAL OPENING
     if st.button(txt["add_btn"], type="primary"):
-        new_sku = f"MAT-NEW-{int(datetime.now().timestamp())}"
-        new_prod_name = "Nuevo Material" if es else "New Material"
+        new_timestamp = int(datetime.now().timestamp())
+        new_sku = f"MAT-NEW-{new_timestamp}"
+        new_prod_name = f"New Material {new_timestamp % 10000}" if not es else f"Nuevo Material {new_timestamp % 10000}"
         
         new_id = execute_db_query(
             """
-            INSERT INTO products (sku, product, quantity, min_stock, price)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO products (sku, product, quantity, min_stock, price, ubication)
+            VALUES (?, ?, ?, ?, ?, ?)
             """,
-            (new_sku, new_prod_name, 10.0, 5.0, 10.00),
+            (new_sku, new_prod_name, 10.0, 5.0, 10.00, "Zone A"),
         )
         
         execute_db_query(
@@ -654,6 +643,10 @@ with tab1:
             """,
             (new_id, datetime.now().strftime("%Y-%m-%d"), 10.0, 10.00, "Initial Record"),
         )
+        
+        # Set session state to immediately open modal for new item
+        st.session_state["selected_product_id"] = new_id
+        st.success(f"Added product #{new_id}!")
         st.rerun()
 
     st.write("---")
@@ -956,13 +949,11 @@ if "selected_product_id" in st.session_state:
                     clean_name = sanitize_filename(f_name)
                     clean_sku = sanitize_filename(product["sku"])
 
-                    # Safely handle image upload path
                     new_photo_path = product["photo_path"]
                     if uploaded_img:
                         ext = uploaded_img.name.split(".")[-1]
                         filename = f"{clean_name}_{clean_sku}_photo.{ext}"
                         
-                        # Ensure IMAGES_DIR exists as a directory
                         if os.path.exists(IMAGES_DIR) and not os.path.isdir(IMAGES_DIR):
                             os.remove(IMAGES_DIR)
                         os.makedirs(IMAGES_DIR, exist_ok=True)
@@ -971,12 +962,10 @@ if "selected_product_id" in st.session_state:
                         with open(new_photo_path, "wb") as f:
                             f.write(uploaded_img.getbuffer())
 
-                    # Safely handle PDF upload path
                     new_pdf_path = product["datasheet_path"]
                     if uploaded_pdf:
                         filename = f"{clean_name}_{clean_sku}_datasheet.pdf"
                         
-                        # Ensure DATASHEETS_DIR exists as a directory
                         if os.path.exists(DATASHEETS_DIR) and not os.path.isdir(DATASHEETS_DIR):
                             os.remove(DATASHEETS_DIR)
                         os.makedirs(DATASHEETS_DIR, exist_ok=True)
