@@ -4,7 +4,6 @@ import tempfile
 from datetime import datetime
 import pandas as pd
 import streamlit as st
-from PIL import Image
 
 # -----------------------------------------------------------------------------
 # APP CONFIG & SAFE DIRECTORY SETUP
@@ -16,9 +15,8 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# Use cloud-safe temp paths to prevent permission errors on Streamlit Cloud
 BASE_DIR = tempfile.gettempdir()
-DB_FILE = os.path.join(BASE_DIR, "inventory.db")
+DB_FILE = os.path.join(BASE_DIR, "inventory_v2.db")
 IMAGES_DIR = os.path.join(BASE_DIR, "inventory_images")
 DATASHEETS_DIR = os.path.join(BASE_DIR, "inventory_datasheets")
 
@@ -33,7 +31,7 @@ for directory in [IMAGES_DIR, DATASHEETS_DIR]:
 # DATABASE INITIALIZATION & HELPERS
 # -----------------------------------------------------------------------------
 def get_db_connection():
-    conn = sqlite3.connect(DB_FILE)
+    conn = sqlite3.connect(DB_FILE, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     return conn
 
@@ -42,6 +40,7 @@ def init_db():
     conn = get_db_connection()
     cursor = conn.cursor()
 
+    # Table 1: Products
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS products (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -69,6 +68,7 @@ def init_db():
         )
     """)
 
+    # Table 2: Multiple Entries / Stock History
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS stock_entries (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -81,6 +81,7 @@ def init_db():
         )
     """)
 
+    # Seed Default 12 Materials if DB is empty
     cursor.execute("SELECT COUNT(*) FROM products")
     if cursor.fetchone()[0] == 0:
         seed_data = [
@@ -542,8 +543,8 @@ with tab1:
 if "selected_product_id" in st.session_state:
     p_id = st.session_state["selected_product_id"]
 
-    conn = get_db_connection()
-    product = conn.execute(
+    modal_conn = get_db_connection()
+    product = modal_conn.execute(
         "SELECT * FROM products WHERE id = ?", (p_id,)
     ).fetchone()
 
@@ -578,11 +579,11 @@ if "selected_product_id" in st.session_state:
                     img_path = os.path.join(IMAGES_DIR, f"prod_{p_id}.png")
                     with open(img_path, "wb") as f:
                         f.write(uploaded_img.getbuffer())
-                    conn.execute(
+                    modal_conn.execute(
                         "UPDATE products SET photo_path = ? WHERE id = ?",
                         (img_path, p_id),
                     )
-                    conn.commit()
+                    modal_conn.commit()
                     st.success("Photo updated!")
                     st.rerun()
 
@@ -605,21 +606,24 @@ if "selected_product_id" in st.session_state:
                     pdf_path = os.path.join(DATASHEETS_DIR, f"pdf_{p_id}.pdf")
                     with open(pdf_path, "wb") as f:
                         f.write(uploaded_pdf.getbuffer())
-                    conn.execute(
+                    modal_conn.execute(
                         "UPDATE products SET datasheet_path = ? WHERE id = ?",
                         (pdf_path, p_id),
                     )
-                    conn.commit()
+                    modal_conn.commit()
                     st.success("Datasheet saved!")
                     st.rerun()
 
             st.write("---")
 
             st.markdown(f"### {txt['entries_sec']}")
-            entries = conn.execute(
+            
+            # Fetch entries safely with DB connection check
+            entries = modal_conn.execute(
                 "SELECT * FROM stock_entries WHERE product_id = ? ORDER BY entry_date DESC",
                 (p_id,),
             ).fetchall()
+            
             if entries:
                 entries_df = pd.DataFrame(
                     [dict(e) for e in entries]
@@ -639,7 +643,7 @@ if "selected_product_id" in st.session_state:
                     e_note = st.text_input("Note / Comment", value="Restock")
 
                     if st.form_submit_button("Add Entry"):
-                        conn.execute(
+                        modal_conn.execute(
                             """
                             INSERT INTO stock_entries (product_id, entry_date, quantity, price, note)
                             VALUES (?, ?, ?, ?, ?)
@@ -653,13 +657,13 @@ if "selected_product_id" in st.session_state:
                             ),
                         )
 
-                        conn.execute(
+                        modal_conn.execute(
                             """
                             UPDATE products SET quantity = ?, price = ? WHERE id = ?
                         """,
                             (e_qty, e_price, p_id),
                         )
-                        conn.commit()
+                        modal_conn.commit()
                         st.success("Entry added!")
                         st.rerun()
 
@@ -707,7 +711,7 @@ if "selected_product_id" in st.session_state:
                 )
 
                 if btn_save:
-                    conn.execute(
+                    modal_conn.execute(
                         """
                         UPDATE products SET 
                             product = ?, icon = ?, description = ?, characteristics = ?,
@@ -730,19 +734,19 @@ if "selected_product_id" in st.session_state:
                             p_id,
                         ),
                     )
-                    conn.commit()
+                    modal_conn.commit()
                     st.success("Saved successfully!")
                     st.rerun()
 
             if st.button(txt["delete_btn"], type="secondary"):
-                conn.execute("DELETE FROM products WHERE id = ?", (p_id,))
-                conn.commit()
+                modal_conn.execute("DELETE FROM products WHERE id = ?", (p_id,))
+                modal_conn.commit()
                 del st.session_state["selected_product_id"]
                 st.rerun()
 
         product_modal()
 
-    conn.close()
+    modal_conn.close()
 
 # -----------------------------------------------------------------------------
 # TAB 2: EDITABLE SPREADSHEET MASTER TABLE
