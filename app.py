@@ -1,12 +1,13 @@
 import os
 import sqlite3
+import tempfile
 from datetime import datetime
 import pandas as pd
 import streamlit as st
 from PIL import Image
 
 # -----------------------------------------------------------------------------
-# APP CONFIG & DIRECTORY SETUP
+# APP CONFIG & SAFE DIRECTORY SETUP
 # -----------------------------------------------------------------------------
 st.set_page_config(
     page_title="Material Inventory System",
@@ -15,12 +16,17 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-DB_FILE = "inventory.db"
-IMAGES_DIR = "images"
-DATASHEETS_DIR = "datasheets"
+# Use cloud-safe temp paths to prevent permission errors on Streamlit Cloud
+BASE_DIR = tempfile.gettempdir()
+DB_FILE = os.path.join(BASE_DIR, "inventory.db")
+IMAGES_DIR = os.path.join(BASE_DIR, "inventory_images")
+DATASHEETS_DIR = os.path.join(BASE_DIR, "inventory_datasheets")
 
-os.makedirs(IMAGES_DIR, exist_ok=True)
-os.makedirs(DATASHEETS_DIR, exist_ok=True)
+for directory in [IMAGES_DIR, DATASHEETS_DIR]:
+    try:
+        os.makedirs(directory, exist_ok=True)
+    except Exception:
+        pass
 
 
 # -----------------------------------------------------------------------------
@@ -36,7 +42,6 @@ def init_db():
     conn = get_db_connection()
     cursor = conn.cursor()
 
-    # Table 1: Products
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS products (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -64,7 +69,6 @@ def init_db():
         )
     """)
 
-    # Table 2: Multiple Entries / Stock History
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS stock_entries (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -77,7 +81,6 @@ def init_db():
         )
     """)
 
-    # Seed Default 12 Materials if DB is empty
     cursor.execute("SELECT COUNT(*) FROM products")
     if cursor.fetchone()[0] == 0:
         seed_data = [
@@ -347,7 +350,6 @@ def init_db():
                 item,
             )
 
-            # Add initial stock entry history
             prod_id = cursor.lastrowid
             cursor.execute(
                 """
@@ -359,7 +361,7 @@ def init_db():
                     datetime.now().strftime("%Y-%m-%d"),
                     item[13],
                     item[5],
-                    "Initial Record (19/08/2026)",
+                    "Initial Record",
                 ),
             )
 
@@ -370,9 +372,6 @@ def init_db():
 init_db()
 
 
-# -----------------------------------------------------------------------------
-# LANDED COST FORMULA CALCULATOR
-# -----------------------------------------------------------------------------
 def calc_landed_cost(price, discount, transport):
     price = price or 0.0
     discount = discount or 0.0
@@ -381,14 +380,12 @@ def calc_landed_cost(price, discount, transport):
 
 
 # -----------------------------------------------------------------------------
-# STREAMLIT SIDEBAR CONTROLS & LANGUAGE
+# SIDEBAR CONTROLS
 # -----------------------------------------------------------------------------
 st.sidebar.title("⚙️ Controls / Control")
-
 lang = st.sidebar.radio("Language / Idioma", ["Español", "English"])
 es = lang == "Español"
 
-# Language Dictionary
 txt = {
     "title": (
         "📦 INVENTARIO DE MATERIALES" if es else "📦 MATERIAL INVENTORY SYSTEM"
@@ -419,7 +416,7 @@ st.title(txt["title"])
 
 
 # -----------------------------------------------------------------------------
-# DATA FETCHING & FILTERING
+# DATA LOAD & FILTERING
 # -----------------------------------------------------------------------------
 def load_products():
     conn = get_db_connection()
@@ -435,7 +432,6 @@ def load_products():
 
 df_products = load_products()
 
-# Top Search & Sort Bar
 col_search, col_sort = st.columns([3, 1])
 
 with col_search:
@@ -456,7 +452,6 @@ with col_sort:
         ],
     )
 
-# Filter Dataset
 filtered_df = df_products.copy()
 
 if search_query:
@@ -467,7 +462,6 @@ if search_query:
         )
     ]
 
-# Apply Sorting
 if sort_option == "Low Stock First":
     filtered_df["stock_diff"] = filtered_df["quantity"] - filtered_df["min_stock"]
     filtered_df = filtered_df.sort_values("stock_diff", ascending=True)
@@ -485,9 +479,6 @@ elif sort_option == "Name: A-Z":
 # -----------------------------------------------------------------------------
 tab1, tab2 = st.tabs([txt["tab1"], txt["tab2"]])
 
-# -----------------------------------------------------------------------------
-# TAB 1: CARDS & INTERACTIVE MODAL DETAILED VIEW
-# -----------------------------------------------------------------------------
 with tab1:
     if st.button(txt["add_btn"], type="primary"):
         conn = get_db_connection()
@@ -512,7 +503,6 @@ with tab1:
 
     st.write("---")
 
-    # Render Product Cards Grid (3 Columns)
     cols = st.columns(3)
     for idx, row in filtered_df.reset_index().iterrows():
         col = cols[idx % 3]
@@ -521,7 +511,6 @@ with tab1:
             badge = txt["low_stock"] if is_low else txt["ok_stock"]
 
             with st.container(border=True):
-                # Product Photo Thumbnail or Placeholder
                 if row["photo_path"] and os.path.exists(row["photo_path"]):
                     st.image(row["photo_path"], use_container_width=True)
                 else:
@@ -541,7 +530,6 @@ with tab1:
                 )
                 st.write(f"💶 **{txt['landed']}:** `€{row['landed_cost']}`")
 
-                # Open Detailed View Modal Button
                 if st.button(
                     f"📄 {'Ficha & Entradas' if es else 'Details & History'}",
                     key=f"card_btn_{row['id']}",
@@ -549,7 +537,7 @@ with tab1:
                     st.session_state["selected_product_id"] = row["id"]
 
 # -----------------------------------------------------------------------------
-# DETAILED PRODUCT MODAL DIALOG
+# DETAILED PRODUCT MODAL
 # -----------------------------------------------------------------------------
 if "selected_product_id" in st.session_state:
     p_id = st.session_state["selected_product_id"]
@@ -570,7 +558,6 @@ if "selected_product_id" in st.session_state:
                 f"SKU: {product['sku']} | Ubicación: {product['ubication']}"
             )
 
-            # --- 1. MEDIA & FILES SECTION ---
             st.markdown("### 🖼️ Photo & Technical Datasheet")
             col_img, col_pdf = st.columns(2)
 
@@ -628,10 +615,7 @@ if "selected_product_id" in st.session_state:
 
             st.write("---")
 
-            # --- 2. MULTIPLE STOCK ENTRIES HISTORY ---
             st.markdown(f"### {txt['entries_sec']}")
-
-            # Fetch entries
             entries = conn.execute(
                 "SELECT * FROM stock_entries WHERE product_id = ? ORDER BY entry_date DESC",
                 (p_id,),
@@ -642,7 +626,6 @@ if "selected_product_id" in st.session_state:
                 )[["entry_date", "quantity", "price", "note"]]
                 st.dataframe(entries_df, use_container_width=True)
 
-            # Add New Entry Form
             with st.expander("➕ Register New Entry (Añadir Entrada)"):
                 with st.form(key=f"add_entry_form_{p_id}"):
                     c1, c2, c3 = st.columns(3)
@@ -670,7 +653,6 @@ if "selected_product_id" in st.session_state:
                             ),
                         )
 
-                        # Update product totals
                         conn.execute(
                             """
                             UPDATE products SET quantity = ?, price = ? WHERE id = ?
@@ -683,7 +665,6 @@ if "selected_product_id" in st.session_state:
 
             st.write("---")
 
-            # --- 3. EDIT PRODUCT MASTER DETAILS FORM ---
             st.markdown("### 📘 Master Details & Pricing")
             with st.form(key=f"edit_prod_form_{p_id}"):
                 col_a, col_b = st.columns(2)
@@ -753,7 +734,6 @@ if "selected_product_id" in st.session_state:
                     st.success("Saved successfully!")
                     st.rerun()
 
-            # Delete Option
             if st.button(txt["delete_btn"], type="secondary"):
                 conn.execute("DELETE FROM products WHERE id = ?", (p_id,))
                 conn.commit()
@@ -770,7 +750,6 @@ if "selected_product_id" in st.session_state:
 with tab2:
     st.markdown("### 📊 Master Editable Grid")
 
-    # Display Streamlit Data Editor
     edited_df = st.data_editor(
         filtered_df[
             [
