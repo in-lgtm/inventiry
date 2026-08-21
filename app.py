@@ -18,6 +18,7 @@ Deploy on Streamlit Community Cloud:
 """
 
 import os
+import tempfile
 import uuid
 from datetime import date, datetime
 
@@ -28,7 +29,43 @@ import streamlit as st
 # ----------------------------------------------------------------------------
 # CONFIG
 # ----------------------------------------------------------------------------
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+SOURCE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+
+def _resolve_data_dir() -> str:
+    """
+    Pick a writable directory to store the database and uploaded files.
+    Some hosts (Streamlit Community Cloud, certain containers) mount the
+    source folder read-only, so writing next to app.py can fail with a
+    PermissionError. This tries, in order:
+      1. DATA_DIR environment variable, if set (lets you point at a
+         mounted persistent volume on Railway/Render/etc.)
+      2. the folder app.py lives in (works on most hosts, and keeps data
+         next to the code for easy local development)
+      3. a folder under the system temp directory (always writable, but
+         not persistent across restarts — used only as a last resort)
+    """
+    candidates = []
+    env_dir = os.environ.get("DATA_DIR")
+    if env_dir:
+        candidates.append(env_dir)
+    candidates.append(SOURCE_DIR)
+    candidates.append(os.path.join(tempfile.gettempdir(), "material_inventory_data"))
+
+    for candidate in candidates:
+        try:
+            os.makedirs(candidate, exist_ok=True)
+            probe = os.path.join(candidate, ".write_test")
+            with open(probe, "w") as f:
+                f.write("ok")
+            os.remove(probe)
+            return candidate
+        except OSError:
+            continue
+    return tempfile.gettempdir()
+
+
+BASE_DIR = _resolve_data_dir()
 DB_PATH = os.path.join(BASE_DIR, "inventory.db")
 IMAGES_DIR = os.path.join(BASE_DIR, "images")
 DATASHEETS_DIR = os.path.join(BASE_DIR, "datasheets")

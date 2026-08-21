@@ -1,0 +1,8 @@
+inventory.db
+__pycache__/
+*.pyc
+.streamlit/secrets.toml
+images/*
+!images/.gitkeep
+datasheets/*
+!datasheets/.gitkeep
