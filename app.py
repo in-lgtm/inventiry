@@ -1,4 +1,5 @@
 import os
+import re
 import sqlite3
 import tempfile
 from datetime import datetime
@@ -16,7 +17,7 @@ st.set_page_config(
 )
 
 BASE_DIR = tempfile.gettempdir()
-DB_FILE = os.path.join(BASE_DIR, "inventory_v5.db")
+DB_FILE = os.path.join(BASE_DIR, "inventory_v6.db")
 IMAGES_DIR = os.path.join(BASE_DIR, "inventory_images")
 DATASHEETS_DIR = os.path.join(BASE_DIR, "inventory_datasheets")
 
@@ -36,11 +37,15 @@ def get_db_connection():
     return conn
 
 
+def sanitize_filename(name):
+    """Sanitizes product names to be safe for filenames."""
+    return re.sub(r"[^\w\-_]", "_", name)
+
+
 def init_db():
     with get_db_connection() as conn:
         cursor = conn.cursor()
 
-        # Table 1: Products
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS products (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -68,7 +73,6 @@ def init_db():
             )
         """)
 
-        # Table 2: Multiple Entries / Stock History
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS stock_entries (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -81,7 +85,6 @@ def init_db():
             )
         """)
 
-        # Seed Default Materials if DB is empty
         cursor.execute("SELECT COUNT(*) FROM products")
         if cursor.fetchone()[0] == 0:
             seed_data = [
@@ -379,7 +382,6 @@ def calc_landed_cost(price, discount, transport):
     return round((price * (1 - discount / 100.0)) + transport, 2)
 
 
-# Safe Path Exist Checker Helper
 def safe_path_exists(path):
     return path is not None and bool(path) and os.path.exists(str(path))
 
@@ -530,7 +532,6 @@ with tab1:
             badge = txt["low_stock"] if is_low else txt["ok_stock"]
 
             with st.container(border=True):
-                # Safe Image Exist Check
                 if safe_path_exists(row["photo_path"]):
                     st.image(row["photo_path"], use_container_width=True)
                 else:
@@ -557,7 +558,7 @@ with tab1:
                     st.session_state["selected_product_id"] = row["id"]
 
 # -----------------------------------------------------------------------------
-# DETAILED PRODUCT MODAL WITH INDIVIDUAL ENTRY DELETION
+# DETAILED PRODUCT MODAL WITH NAMED SAVES & NO AUTO-LOOPING
 # -----------------------------------------------------------------------------
 if "selected_product_id" in st.session_state:
     p_id = st.session_state["selected_product_id"]
@@ -578,33 +579,23 @@ if "selected_product_id" in st.session_state:
                 f"SKU: {product['sku']} | Ubicación: {product['ubication']}"
             )
 
-            st.markdown("### 🖼️ Photo & Technical Datasheet")
+            st.markdown("### 🖼️ Photo & Technical Datasheet Upload")
             col_img, col_pdf = st.columns(2)
 
+            # Upload Image
             with col_img:
                 if safe_path_exists(product["photo_path"]):
                     st.image(
                         product["photo_path"],
-                        caption="Product Photo",
+                        caption="Current Product Photo",
                         use_container_width=True,
                     )
 
                 uploaded_img = st.file_uploader(
-                    "Upload Photo (PNG/JPG)", type=["png", "jpg", "jpeg"]
+                    "Select Photo (PNG/JPG)", type=["png", "jpg", "jpeg"]
                 )
-                if uploaded_img:
-                    img_path = os.path.join(IMAGES_DIR, f"prod_{p_id}.png")
-                    with open(img_path, "wb") as f:
-                        f.write(uploaded_img.getbuffer())
-                    with get_db_connection() as conn:
-                        conn.execute(
-                            "UPDATE products SET photo_path = ? WHERE id = ?",
-                            (img_path, p_id),
-                        )
-                        conn.commit()
-                    st.success("Photo updated!")
-                    st.rerun()
 
+            # Upload PDF
             with col_pdf:
                 if safe_path_exists(product["datasheet_path"]):
                     st.success("🟢 Technical Datasheet Attached")
@@ -612,28 +603,16 @@ if "selected_product_id" in st.session_state:
                         st.download_button(
                             "📥 Download Datasheet PDF",
                             pdf_file,
-                            file_name=f"{product['sku']}_datasheet.pdf",
+                            file_name=f"{sanitize_filename(product['product'])}_{product['sku']}_datasheet.pdf",
                         )
 
                 uploaded_pdf = st.file_uploader(
-                    "Upload Datasheet (PDF)", type=["pdf"]
+                    "Select Datasheet (PDF)", type=["pdf"]
                 )
-                if uploaded_pdf:
-                    pdf_path = os.path.join(DATASHEETS_DIR, f"pdf_{p_id}.pdf")
-                    with open(pdf_path, "wb") as f:
-                        f.write(uploaded_pdf.getbuffer())
-                    with get_db_connection() as conn:
-                        conn.execute(
-                            "UPDATE products SET datasheet_path = ? WHERE id = ?",
-                            (pdf_path, p_id),
-                        )
-                        conn.commit()
-                    st.success("Datasheet saved!")
-                    st.rerun()
 
             st.write("---")
 
-            # --- MULTIPLE STOCK ENTRIES HISTORY WITH INDIVIDUAL DELETION ---
+            # --- MULTIPLE STOCK ENTRIES HISTORY ---
             st.markdown(f"### {txt['entries_sec']}")
 
             with get_db_connection() as conn:
@@ -672,7 +651,7 @@ if "selected_product_id" in st.session_state:
                         st.success("Entry removed!")
                         st.rerun()
 
-            with st.expander("➕ Register New Entry (Añadir Entrada)"):
+            with st.expander("➕ Register New Stock Entry"):
                 with st.form(key=f"add_entry_form_{p_id}"):
                     c1, c2, c3 = st.columns(3)
                     e_date = c1.date_input("Date", value=datetime.now())
@@ -712,6 +691,7 @@ if "selected_product_id" in st.session_state:
 
             st.write("---")
 
+            # --- MASTER DETAILS FORM WITH EXPLICIT NAMED FILE SAVES ---
             st.markdown("### 📘 Master Details & Pricing")
             with st.form(key=f"edit_prod_form_{p_id}"):
                 col_a, col_b = st.columns(2)
@@ -754,13 +734,34 @@ if "selected_product_id" in st.session_state:
                 )
 
                 if btn_save:
+                    clean_name = sanitize_filename(f_name)
+                    clean_sku = sanitize_filename(product["sku"])
+
+                    # Save image with Product Name
+                    new_photo_path = product["photo_path"]
+                    if uploaded_img:
+                        ext = uploaded_img.name.split(".")[-1]
+                        filename = f"{clean_name}_{clean_sku}_photo.{ext}"
+                        new_photo_path = os.path.join(IMAGES_DIR, filename)
+                        with open(new_photo_path, "wb") as f:
+                            f.write(uploaded_img.getbuffer())
+
+                    # Save PDF with Product Name
+                    new_pdf_path = product["datasheet_path"]
+                    if uploaded_pdf:
+                        filename = f"{clean_name}_{clean_sku}_datasheet.pdf"
+                        new_pdf_path = os.path.join(DATASHEETS_DIR, filename)
+                        with open(new_pdf_path, "wb") as f:
+                            f.write(uploaded_pdf.getbuffer())
+
                     with get_db_connection() as conn:
                         conn.execute(
                             """
                             UPDATE products SET 
                                 product = ?, icon = ?, description = ?, characteristics = ?,
                                 where_used = ?, price = ?, discount = ?, transport_price = ?,
-                                quantity = ?, min_stock = ?, ubication = ?
+                                quantity = ?, min_stock = ?, ubication = ?,
+                                photo_path = ?, datasheet_path = ?
                             WHERE id = ?
                         """,
                             (
@@ -775,11 +776,15 @@ if "selected_product_id" in st.session_state:
                                 f_qty,
                                 f_min,
                                 f_ubic,
+                                new_photo_path,
+                                new_pdf_path,
                                 p_id,
                             ),
                         )
                         conn.commit()
-                    st.success("Saved successfully!")
+
+                    st.success("All product details and files saved successfully!")
+                    del st.session_state["selected_product_id"]
                     st.rerun()
 
             if st.button(txt["delete_btn"], type="secondary"):
