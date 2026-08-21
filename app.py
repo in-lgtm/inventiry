@@ -2,13 +2,12 @@ import io
 import os
 import re
 import sqlite3
-import tempfile
 from datetime import datetime
 import pandas as pd
 import streamlit as st
 
 # -----------------------------------------------------------------------------
-# APP CONFIG & SAFE DIRECTORY SETUP
+# APP CONFIG & LOCAL REPOSITORY DIRECTORY SETUP
 # -----------------------------------------------------------------------------
 st.set_page_config(
     page_title="Material Inventory System",
@@ -17,10 +16,11 @@ st.set_page_config(
     initial_sidebar_state="collapsed",
 )
 
-BASE_DIR = tempfile.gettempdir()
-DB_FILE = os.path.join(BASE_DIR, "inventory_v10.db")
-IMAGES_DIR = os.path.join(BASE_DIR, "inventory_images")
-DATASHEETS_DIR = os.path.join(BASE_DIR, "inventory_datasheets")
+# Store files directly in your GitHub repository folder structure
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+DB_FILE = os.path.join(BASE_DIR, "inventory.db")
+IMAGES_DIR = os.path.join(BASE_DIR, "images")
+DATASHEETS_DIR = os.path.join(BASE_DIR, "datasheets")
 
 for directory in [IMAGES_DIR, DATASHEETS_DIR]:
     try:
@@ -459,43 +459,32 @@ def import_excel_to_database(uploaded_file):
 
 
 # -----------------------------------------------------------------------------
-# TOP HEADER & TIGHTLY-GROUPED EMOJI LANGUAGE SWITCHER
+# TOP HEADER & TWO SPLIT LANGUAGE BUTTONS (ENGLISH DEFAULT)
 # -----------------------------------------------------------------------------
 if "current_lang" not in st.session_state:
     st.session_state["current_lang"] = "en"  # Default set to English
 
-col_header, col_langs = st.columns([5, 1.2])
+col_header, col_en, col_es = st.columns([4, 1, 1])
 
-# Language Buttons Box
-with col_langs:
-    st.markdown(
-        "<div style='margin-top: 5px;'></div>", unsafe_allow_html=True
-    )  # Fine alignment
-    l1, l2 = st.columns([1, 1], gap="small")
+with col_en:
+    btn_type_en = (
+        "primary" if st.session_state["current_lang"] == "en" else "secondary"
+    )
+    if st.button("🇬🇧 English", key="lang_btn_en", type=btn_type_en):
+        st.session_state["current_lang"] = "en"
+        if "selected_product_id" in st.session_state:
+            del st.session_state["selected_product_id"]
+        st.rerun()
 
-    with l1:
-        btn_type_en = (
-            "primary"
-            if st.session_state["current_lang"] == "en"
-            else "secondary"
-        )
-        if st.button("🇬🇧 EN", key="lang_btn_en", type=btn_type_en):
-            st.session_state["current_lang"] = "en"
-            if "selected_product_id" in st.session_state:
-                del st.session_state["selected_product_id"]  # Prevents modal auto-opening
-            st.rerun()
-
-    with l2:
-        btn_type_es = (
-            "primary"
-            if st.session_state["current_lang"] == "es"
-            else "secondary"
-        )
-        if st.button("🇪🇸 ES", key="lang_btn_es", type=btn_type_es):
-            st.session_state["current_lang"] = "es"
-            if "selected_product_id" in st.session_state:
-                del st.session_state["selected_product_id"]  # Prevents modal auto-opening
-            st.rerun()
+with col_es:
+    btn_type_es = (
+        "primary" if st.session_state["current_lang"] == "es" else "secondary"
+    )
+    if st.button("🇪🇸 Español", key="lang_btn_es", type=btn_type_es):
+        st.session_state["current_lang"] = "es"
+        if "selected_product_id" in st.session_state:
+            del st.session_state["selected_product_id"]
+        st.rerun()
 
 es = st.session_state["current_lang"] == "es"
 
