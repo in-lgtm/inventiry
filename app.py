@@ -18,7 +18,7 @@ st.set_page_config(
 )
 
 BASE_DIR = tempfile.gettempdir()
-DB_FILE = os.path.join(BASE_DIR, "inventory_v9.db")
+DB_FILE = os.path.join(BASE_DIR, "inventory_v10.db")
 IMAGES_DIR = os.path.join(BASE_DIR, "inventory_images")
 DATASHEETS_DIR = os.path.join(BASE_DIR, "inventory_datasheets")
 
@@ -459,30 +459,43 @@ def import_excel_to_database(uploaded_file):
 
 
 # -----------------------------------------------------------------------------
-# TOP HEADER & TWO SPLIT LANGUAGE BUTTONS (ENGLISH DEFAULT)
+# TOP HEADER & TIGHTLY-GROUPED EMOJI LANGUAGE SWITCHER
 # -----------------------------------------------------------------------------
 if "current_lang" not in st.session_state:
     st.session_state["current_lang"] = "en"  # Default set to English
 
-col_header, col_en, col_es = st.columns([4, 1, 1])
+col_header, col_langs = st.columns([5, 1.2])
 
-# English Language Button Box
-with col_en:
-    btn_type_en = (
-        "primary" if st.session_state["current_lang"] == "en" else "secondary"
-    )
-    if st.button("🇬🇧 English", key="lang_btn_en", type=btn_type_en):
-        st.session_state["current_lang"] = "en"
-        st.rerun()
+# Language Buttons Box
+with col_langs:
+    st.markdown(
+        "<div style='margin-top: 5px;'></div>", unsafe_allow_html=True
+    )  # Fine alignment
+    l1, l2 = st.columns([1, 1], gap="small")
 
-# Spanish Language Button Box
-with col_es:
-    btn_type_es = (
-        "primary" if st.session_state["current_lang"] == "es" else "secondary"
-    )
-    if st.button("🇪🇸 Español", key="lang_btn_es", type=btn_type_es):
-        st.session_state["current_lang"] = "es"
-        st.rerun()
+    with l1:
+        btn_type_en = (
+            "primary"
+            if st.session_state["current_lang"] == "en"
+            else "secondary"
+        )
+        if st.button("🇬🇧 EN", key="lang_btn_en", type=btn_type_en):
+            st.session_state["current_lang"] = "en"
+            if "selected_product_id" in st.session_state:
+                del st.session_state["selected_product_id"]  # Prevents modal auto-opening
+            st.rerun()
+
+    with l2:
+        btn_type_es = (
+            "primary"
+            if st.session_state["current_lang"] == "es"
+            else "secondary"
+        )
+        if st.button("🇪🇸 ES", key="lang_btn_es", type=btn_type_es):
+            st.session_state["current_lang"] = "es"
+            if "selected_product_id" in st.session_state:
+                del st.session_state["selected_product_id"]  # Prevents modal auto-opening
+            st.rerun()
 
 es = st.session_state["current_lang"] == "es"
 
@@ -779,6 +792,7 @@ if "selected_product_id" in st.session_state:
 
             st.write("---")
 
+            # Stock Entries History
             st.markdown(f"### {txt['entries_sec']}")
 
             with get_db_connection() as conn:
