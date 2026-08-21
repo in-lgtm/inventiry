@@ -12,11 +12,11 @@ st.set_page_config(
     page_title="Material Inventory System",
     page_icon="📦",
     layout="wide",
-    initial_sidebar_state="expanded",
+    initial_sidebar_state="collapsed",
 )
 
 BASE_DIR = tempfile.gettempdir()
-DB_FILE = os.path.join(BASE_DIR, "inventory_v3.db")
+DB_FILE = os.path.join(BASE_DIR, "inventory_v4.db")
 IMAGES_DIR = os.path.join(BASE_DIR, "inventory_images")
 DATASHEETS_DIR = os.path.join(BASE_DIR, "inventory_datasheets")
 
@@ -81,7 +81,7 @@ def init_db():
             )
         """)
 
-        # Seed Default 12 Materials if DB is empty
+        # Seed Default Materials if DB is empty
         cursor.execute("SELECT COUNT(*) FROM products")
         if cursor.fetchone()[0] == 0:
             seed_data = [
@@ -362,7 +362,7 @@ def init_db():
                         datetime.now().strftime("%Y-%m-%d"),
                         item[13],
                         item[5],
-                        "Initial Record",
+                        "Initial Batch",
                     ),
                 )
 
@@ -380,11 +380,26 @@ def calc_landed_cost(price, discount, transport):
 
 
 # -----------------------------------------------------------------------------
-# SIDEBAR CONTROLS
+# TOP HEADER & TOP-RIGHT EMOJI LANGUAGE SWITCHER
 # -----------------------------------------------------------------------------
-st.sidebar.title("⚙️ Controls / Control")
-lang = st.sidebar.radio("Language / Idioma", ["Español", "English"])
-es = lang == "Español"
+if "current_lang" not in st.session_state:
+    st.session_state["current_lang"] = "es"
+
+col_header, col_lang = st.columns([5, 1])
+
+with col_lang:
+    lang_btn_text = (
+        "🇬🇧 English"
+        if st.session_state["current_lang"] == "es"
+        else "🇪🇸 Español"
+    )
+    if st.button(lang_btn_text, key="top_lang_switcher", type="secondary"):
+        st.session_state["current_lang"] = (
+            "en" if st.session_state["current_lang"] == "es" else "es"
+        )
+        st.rerun()
+
+es = st.session_state["current_lang"] == "es"
 
 txt = {
     "title": (
@@ -412,7 +427,8 @@ txt = {
     ),
 }
 
-st.title(txt["title"])
+with col_header:
+    st.title(txt["title"])
 
 
 # -----------------------------------------------------------------------------
@@ -535,12 +551,11 @@ with tab1:
                     st.session_state["selected_product_id"] = row["id"]
 
 # -----------------------------------------------------------------------------
-# DETAILED PRODUCT MODAL
+# DETAILED PRODUCT MODAL WITH INDIVIDUAL ENTRY DELETION
 # -----------------------------------------------------------------------------
 if "selected_product_id" in st.session_state:
     p_id = st.session_state["selected_product_id"]
 
-    # Read product details
     with get_db_connection() as conn:
         product = conn.execute(
             "SELECT * FROM products WHERE id = ?", (p_id,)
@@ -616,9 +631,9 @@ if "selected_product_id" in st.session_state:
 
             st.write("---")
 
+            # --- MULTIPLE STOCK ENTRIES HISTORY WITH INDIVIDUAL DELETION ---
             st.markdown(f"### {txt['entries_sec']}")
 
-            # Fetch entries safely inside context manager
             with get_db_connection() as conn:
                 entries = conn.execute(
                     "SELECT * FROM stock_entries WHERE product_id = ? ORDER BY entry_date DESC",
@@ -626,11 +641,38 @@ if "selected_product_id" in st.session_state:
                 ).fetchall()
 
             if entries:
-                entries_df = pd.DataFrame(
-                    [dict(e) for e in entries]
-                )[["entry_date", "quantity", "price", "note"]]
-                st.dataframe(entries_df, use_container_width=True)
+                for entry in entries:
+                    e_col1, e_col2, e_col3, e_col4, e_col5 = st.columns(
+                        [2, 2, 2, 3, 1]
+                    )
+                    e_col1.write(f"📅 {entry['entry_date']}")
+                    e_col2.write(f"📦 `{entry['quantity']}`")
+                    e_col3.write(f"💶 `€{entry['price']:.2f}`")
+                    e_col4.caption(f"{entry['note'] or '-'}")
 
+                    # Inline Delete Button for each entry
+                    if e_col5.button("🗑️", key=f"del_entry_{entry['id']}"):
+                        with get_db_connection() as conn:
+                            conn.execute(
+                                "DELETE FROM stock_entries WHERE id = ?",
+                                (entry["id"],),
+                            )
+                            # Re-fetch latest remaining entry to auto-adjust total quantity
+                            rem_entries = conn.execute(
+                                "SELECT * FROM stock_entries WHERE product_id = ? ORDER BY entry_date DESC",
+                                (p_id,),
+                            ).fetchall()
+                            if rem_entries:
+                                latest = rem_entries[0]
+                                conn.execute(
+                                    "UPDATE products SET quantity = ?, price = ? WHERE id = ?",
+                                    (latest["quantity"], latest["price"], p_id),
+                                )
+                            conn.commit()
+                        st.success("Entry removed!")
+                        st.rerun()
+
+            # Form to register new stock entry
             with st.expander("➕ Register New Entry (Añadir Entrada)"):
                 with st.form(key=f"add_entry_form_{p_id}"):
                     c1, c2, c3 = st.columns(3)
