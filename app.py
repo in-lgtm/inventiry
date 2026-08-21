@@ -1,13 +1,15 @@
 import io
 import os
 import re
+import shutil
 import sqlite3
+import tempfile
 from datetime import datetime
 import pandas as pd
 import streamlit as st
 
 # -----------------------------------------------------------------------------
-# APP CONFIG & LOCAL REPOSITORY DIRECTORY SETUP
+# APP CONFIG & SAFE DIRECTORY SETUP
 # -----------------------------------------------------------------------------
 st.set_page_config(
     page_title="Material Inventory System",
@@ -16,24 +18,23 @@ st.set_page_config(
     initial_sidebar_state="collapsed",
 )
 
-# Store inventory.db directly in your local project root directory
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_FILE = os.path.join(BASE_DIR, "inventory.db")
 IMAGES_DIR = os.path.join(BASE_DIR, "images")
 DATASHEETS_DIR = os.path.join(BASE_DIR, "datasheets")
 
-for directory in [IMAGES_DIR, DATASHEETS_DIR]:
-    try:
-        os.makedirs(directory, exist_ok=True)
-    except Exception:
-        pass
+# Resolve folder vs file path conflicts cleanly
+for folder_path in [IMAGES_DIR, DATASHEETS_DIR]:
+    if os.path.exists(folder_path) and not os.path.isdir(folder_path):
+        os.remove(folder_path)  # Remove file blocking directory creation
+    os.makedirs(folder_path, exist_ok=True)
 
 
 # -----------------------------------------------------------------------------
 # DATABASE CONNECTION & MUTATION HELPERS
 # -----------------------------------------------------------------------------
 def get_db_connection():
-    """Returns a fresh SQLite connection with WAL mode for reliable disk writes."""
+    """Returns a fresh SQLite connection with WAL mode for reliable writes."""
     conn = sqlite3.connect(DB_FILE, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL;")
@@ -55,7 +56,7 @@ def execute_db_query(query, params=()):
 
 def sanitize_filename(name):
     """Sanitizes names to be safe for filenames and Excel sheet titles."""
-    clean = re.sub(r"[^\w\-_]", "_", name)
+    clean = re.sub(r"[^\w\-_]", "_", str(name))
     return clean[:30]
 
 
@@ -63,6 +64,20 @@ def init_db():
     """Initializes tables and seeds default data if inventory.db is new."""
     conn = get_db_connection()
     cursor = conn.cursor()
+
+    # Check if products table exists
+    cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='products'")
+    table_exists = cursor.fetchone()
+
+    if table_exists:
+        cursor.execute("PRAGMA table_info(products)")
+        columns = [column[1] for column in cursor.fetchall()]
+        required_cols = ["sds_hazard_class", "source_origin", "batch_lot", "where_used"]
+        
+        # If schema is missing new fields, recreate cleanly
+        if not all(col in columns for col in required_cols):
+            cursor.execute("DROP TABLE IF EXISTS products")
+            cursor.execute("DROP TABLE IF EXISTS stock_entries")
 
     # Table 1: Products
     cursor.execute("""
@@ -404,7 +419,7 @@ def calc_landed_cost(price, discount, transport):
 
 
 def safe_path_exists(path):
-    return path is not None and bool(path) and os.path.exists(str(path))
+    return path is not None and bool(path) and os.path.exists(str(path)) and not os.path.isdir(str(path))
 
 
 # -----------------------------------------------------------------------------
@@ -624,7 +639,6 @@ with tab1:
         new_sku = f"MAT-NEW-{int(datetime.now().timestamp())}"
         new_prod_name = "Nuevo Material" if es else "New Material"
         
-        # INSERT PRODUCT DIRECTLY TO INVENTORY.DB
         new_id = execute_db_query(
             """
             INSERT INTO products (sku, product, quantity, min_stock, price)
@@ -633,7 +647,6 @@ with tab1:
             (new_sku, new_prod_name, 10.0, 5.0, 10.00),
         )
         
-        # INSERT INITIAL ENTRY
         execute_db_query(
             """
             INSERT INTO stock_entries (product_id, entry_date, quantity, price, note)
@@ -836,13 +849,11 @@ if "selected_product_id" in st.session_state:
                     e_col3.write(f"💶 `€{entry['price']:.2f}`")
                     e_col4.caption(f"{entry['note'] or '-'}")
 
-                    # DELETE ENTRY DIRECTLY FROM INVENTORY.DB
                     if e_col5.button("🗑️", key=f"del_entry_{entry['id']}"):
                         execute_db_query(
                             "DELETE FROM stock_entries WHERE id = ?", (entry["id"],)
                         )
                         
-                        # Recalculate remaining stock
                         conn = get_db_connection()
                         try:
                             rem_entries = conn.execute(
@@ -859,10 +870,9 @@ if "selected_product_id" in st.session_state:
                                 (latest["quantity"], latest["price"], p_id),
                             )
 
-                        st.success("Entry removed from inventory.db!")
+                        st.success("Entry removed!")
                         st.rerun()
 
-            # ADD NEW ENTRY DIRECTLY TO INVENTORY.DB
             with st.expander("➕ Register New Stock Entry"):
                 with st.form(key=f"add_entry_form_{p_id}"):
                     c1, c2, c3 = st.columns(3)
@@ -896,12 +906,11 @@ if "selected_product_id" in st.session_state:
                             """,
                             (e_qty, e_price, p_id),
                         )
-                        st.success("Entry added to inventory.db!")
+                        st.success("Entry added!")
                         st.rerun()
 
             st.write("---")
 
-            # UPDATE PRODUCT DETAILS DIRECTLY TO INVENTORY.DB
             st.markdown("### 📘 Master Details & Pricing")
             with st.form(key=f"edit_prod_form_{p_id}"):
                 col_a, col_b = st.columns(2)
@@ -947,17 +956,31 @@ if "selected_product_id" in st.session_state:
                     clean_name = sanitize_filename(f_name)
                     clean_sku = sanitize_filename(product["sku"])
 
+                    # Safely handle image upload path
                     new_photo_path = product["photo_path"]
                     if uploaded_img:
                         ext = uploaded_img.name.split(".")[-1]
                         filename = f"{clean_name}_{clean_sku}_photo.{ext}"
+                        
+                        # Ensure IMAGES_DIR exists as a directory
+                        if os.path.exists(IMAGES_DIR) and not os.path.isdir(IMAGES_DIR):
+                            os.remove(IMAGES_DIR)
+                        os.makedirs(IMAGES_DIR, exist_ok=True)
+                        
                         new_photo_path = os.path.join(IMAGES_DIR, filename)
                         with open(new_photo_path, "wb") as f:
                             f.write(uploaded_img.getbuffer())
 
+                    # Safely handle PDF upload path
                     new_pdf_path = product["datasheet_path"]
                     if uploaded_pdf:
                         filename = f"{clean_name}_{clean_sku}_datasheet.pdf"
+                        
+                        # Ensure DATASHEETS_DIR exists as a directory
+                        if os.path.exists(DATASHEETS_DIR) and not os.path.isdir(DATASHEETS_DIR):
+                            os.remove(DATASHEETS_DIR)
+                        os.makedirs(DATASHEETS_DIR, exist_ok=True)
+                        
                         new_pdf_path = os.path.join(DATASHEETS_DIR, filename)
                         with open(new_pdf_path, "wb") as f:
                             f.write(uploaded_pdf.getbuffer())
@@ -989,15 +1012,14 @@ if "selected_product_id" in st.session_state:
                         ),
                     )
 
-                    st.success("Product details saved to inventory.db!")
+                    st.success("Product details saved successfully!")
                     del st.session_state["selected_product_id"]
                     st.rerun()
 
-            # DELETE PRODUCT DIRECTLY FROM INVENTORY.DB
             if st.button(txt["delete_btn"], type="secondary"):
                 execute_db_query("DELETE FROM products WHERE id = ?", (p_id,))
                 del st.session_state["selected_product_id"]
-                st.success("Product removed from inventory.db!")
+                st.success("Product removed!")
                 st.rerun()
 
         product_modal()
