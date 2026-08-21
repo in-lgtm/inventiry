@@ -1,3 +1,4 @@
+import io
 import os
 import re
 import sqlite3
@@ -17,7 +18,7 @@ st.set_page_config(
 )
 
 BASE_DIR = tempfile.gettempdir()
-DB_FILE = os.path.join(BASE_DIR, "inventory_v6.db")
+DB_FILE = os.path.join(BASE_DIR, "inventory_v7.db")
 IMAGES_DIR = os.path.join(BASE_DIR, "inventory_images")
 DATASHEETS_DIR = os.path.join(BASE_DIR, "inventory_datasheets")
 
@@ -104,10 +105,10 @@ def init_db():
                     250,
                     550.0,
                     "1 Box x 350 mts (350m) + 8 U x 25 mts (200m). Total: 550 mts.",
-                    "Fijación textil vertical/horizontal y paneles modulares.",
-                    "Barcelona, España",
+                    "Vertical/horizontal textile fastening and modular panels.",
+                    "Barcelona, Spain",
                     "LOT-VEL401-26",
-                    "No peligroso",
+                    "Non-hazardous",
                 ),
                 (
                     "🏷️",
@@ -125,10 +126,10 @@ def init_db():
                     2000,
                     10215.0,
                     "20 Box x 495 mts (9,900m) + 7 U x 45 mts (315m). Total: 10,215 mts.",
-                    "Cierre de cubiertas de gran envergadura y cortinas aislantes.",
-                    "Barcelona, España",
+                    "Large roof closure and insulating curtains.",
+                    "Barcelona, Spain",
                     "LOT-VEL758-26",
-                    "No peligroso",
+                    "Non-hazardous",
                 ),
                 (
                     "🧪",
@@ -145,11 +146,11 @@ def init_db():
                     150,
                     100,
                     654.0,
-                    "23 Box x 28 U (644 U) + 10 U sueltas. Total: 654 U.",
-                    "Sellado rápido de carcasas y adhesión ligera.",
-                    "Valencia, España",
+                    "23 Box x 28 U (644 U) + 10 U loose. Total: 654 U.",
+                    "Fast housing sealing and light adhesion.",
+                    "Valencia, Spain",
                     "LOT-TUN-400-A",
-                    "Clase 3 Inflamable",
+                    "Class 3 Flammable",
                 ),
                 (
                     "🧪",
@@ -166,11 +167,11 @@ def init_db():
                     30,
                     20,
                     15.0,
-                    "15 U sueltas. Total: 15 U.",
-                    "Sellado elástico e industrial de mamparas.",
+                    "15 U loose. Total: 15 U.",
+                    "Elastic and industrial partition sealing.",
                     "Hubei, China",
                     "LOT-HUI-600X",
-                    "Irritante",
+                    "Irritant",
                 ),
                 (
                     "🧪",
@@ -187,11 +188,11 @@ def init_db():
                     40,
                     25,
                     13.0,
-                    "13 U sueltas. Total: 13 U.",
-                    "Sellado de cristales y juntas estructurales.",
-                    "Wiesbaden, Alemania",
+                    "13 U loose. Total: 13 U.",
+                    "Glass and structural joint sealing.",
+                    "Wiesbaden, Germany",
                     "LOT-DOW-600D",
-                    "Bajo VOC",
+                    "Low VOC",
                 ),
                 (
                     "🧪",
@@ -209,16 +210,16 @@ def init_db():
                     15,
                     36.0,
                     "3 Box x 12 U. Total: 36 U.",
-                    "Sellado impermeable de marcos y molduras.",
-                    "Milán, Italia",
+                    "Waterproof sealing of frames and moldings.",
+                    "Milan, Italy",
                     "LOT-SEA-36X",
-                    "No peligroso",
+                    "Non-hazardous",
                 ),
                 (
                     "⚡",
                     "MAT-PV-TRAD",
                     "PV TRADICIONAL",
-                    "Módulo Fotovoltaico Estándar | Total Stock: 23 U",
+                    "Standard Photovoltaic Module | Total Stock: 23 U",
                     "PV Solar Tech",
                     140.00,
                     12.0,
@@ -230,16 +231,16 @@ def init_db():
                     10,
                     23.0,
                     "23 U. Total: 23 U.",
-                    "Instalación en cubiertas solares tradicionales.",
-                    "Madrid, España",
+                    "Traditional solar roof installation.",
+                    "Madrid, Spain",
                     "LOT-PV-TRAD-01",
-                    "Eléctrico",
+                    "Electrical",
                 ),
                 (
                     "⚡",
                     "MAT-PV-560W",
                     "PV 560W",
-                    "Panel Fotovoltaico Alta Eficiencia 560W | Total Stock: 5 U",
+                    "High-Efficiency PV Panel 560W | Total Stock: 5 U",
                     "PV Solar Tech",
                     210.00,
                     15.0,
@@ -251,16 +252,16 @@ def init_db():
                     10,
                     5.0,
                     "5 U. Total: 5 U.",
-                    "Generación de energía solar de alta densidad.",
+                    "High-density solar power generation.",
                     "Jiangsu, China",
                     "LOT-PV-560W-26",
-                    "Eléctrico",
+                    "Electrical",
                 ),
                 (
                     "📦",
                     "MAT-PV-WGV",
                     "PV White Glue Velcro Vertical",
-                    "Panel PV Blanco con Velcro Vertical Integrado | Total Stock: 127 U",
+                    "White PV Panel with Integrated Vertical Velcro | Total Stock: 127 U",
                     "Custom Solar Flex",
                     165.00,
                     10.0,
@@ -272,16 +273,16 @@ def init_db():
                     30,
                     127.0,
                     "127 U. Total: 127 U.",
-                    "Montaje rápido fotovoltaico en posición vertical sobre lona.",
-                    "Oporto, Portugal",
+                    "Fast vertical photovoltaic mounting on canvas.",
+                    "Porto, Portugal",
                     "LOT-PV-WGV-127",
-                    "No peligroso",
+                    "Non-hazardous",
                 ),
                 (
                     "📦",
                     "MAT-PV-WGH",
                     "PV White Glue Velcro Horizontal",
-                    "Panel PV Blanco con Velcro Horizontal Integrado | Total Stock: 2 U",
+                    "White PV Panel with Integrated Horizontal Velcro | Total Stock: 2 U",
                     "Custom Solar Flex",
                     165.00,
                     10.0,
@@ -293,16 +294,16 @@ def init_db():
                     15,
                     2.0,
                     "2 U. Total: 2 U.",
-                    "Montaje rápido fotovoltaico en posición horizontal.",
-                    "Oporto, Portugal",
+                    "Fast horizontal photovoltaic mounting.",
+                    "Porto, Portugal",
                     "LOT-PV-WGH-02",
-                    "No peligroso",
+                    "Non-hazardous",
                 ),
                 (
                     "📦",
                     "MAT-PV-WHITE",
                     "PV White",
-                    "Módulo PV Flex Blanco Estándar | Total Stock: 110 U",
+                    "Standard White Flex PV Module | Total Stock: 110 U",
                     "Custom Solar Flex",
                     150.00,
                     8.0,
@@ -314,16 +315,16 @@ def init_db():
                     25,
                     110.0,
                     "110 U. Total: 110 U.",
-                    "Integración arquitectónica fotovoltaica blanca.",
-                    "Oporto, Portugal",
+                    "Architectural white photovoltaic integration.",
+                    "Porto, Portugal",
                     "LOT-PV-W-110",
-                    "No peligroso",
+                    "Non-hazardous",
                 ),
                 (
                     "📦",
                     "MAT-PV-BLACK",
                     "PV Black",
-                    "Módulo PV Flex Negro Full Black | Total Stock: 32 U",
+                    "Full Black Flex PV Module | Total Stock: 32 U",
                     "Custom Solar Flex",
                     155.00,
                     8.0,
@@ -335,10 +336,10 @@ def init_db():
                     20,
                     32.0,
                     "32 U. Total: 32 U.",
-                    "Instalaciones estéticas Full Black sobre superficie oscura.",
-                    "Oporto, Portugal",
+                    "Aesthetic Full Black installation on dark surfaces.",
+                    "Porto, Portugal",
                     "LOT-PV-B-32",
-                    "No peligroso",
+                    "Non-hazardous",
                 ),
             ]
 
@@ -387,22 +388,60 @@ def safe_path_exists(path):
 
 
 # -----------------------------------------------------------------------------
-# TOP HEADER & EMOJI LANGUAGE SWITCHER
+# EXCEL IMPORT / EXPORT HELPERS
+# -----------------------------------------------------------------------------
+def export_database_to_excel():
+    with get_db_connection() as conn:
+        products_df = pd.read_sql_query("SELECT * FROM products", conn)
+        entries_df = pd.read_sql_query("SELECT * FROM stock_entries", conn)
+
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        products_df.to_excel(writer, sheet_name="Products", index=False)
+        entries_df.to_excel(writer, sheet_name="Stock_Entries", index=False)
+
+    return output.getvalue()
+
+
+def import_excel_to_database(uploaded_file):
+    try:
+        excel_file = pd.ExcelFile(uploaded_file)
+        if "Products" in excel_file.sheet_names:
+            p_df = pd.read_excel(excel_file, sheet_name="Products")
+            with get_db_connection() as conn:
+                conn.execute("DELETE FROM products")
+                p_df.to_sql("products", conn, if_exists="append", index=False)
+
+        if "Stock_Entries" in excel_file.sheet_names:
+            e_df = pd.read_excel(excel_file, sheet_name="Stock_Entries")
+            with get_db_connection() as conn:
+                conn.execute("DELETE FROM stock_entries")
+                e_df.to_sql(
+                    "stock_entries", conn, if_exists="append", index=False
+                )
+
+        return True, "Database imported successfully!"
+    except Exception as err:
+        return False, f"Import failed: {str(err)}"
+
+
+# -----------------------------------------------------------------------------
+# TOP HEADER & DEFAULT ENGLISH EMOJI LANGUAGE SWITCHER
 # -----------------------------------------------------------------------------
 if "current_lang" not in st.session_state:
-    st.session_state["current_lang"] = "es"
+    st.session_state["current_lang"] = "en"  # Default set to English
 
 col_header, col_lang = st.columns([5, 1])
 
 with col_lang:
     lang_btn_text = (
-        "🇬🇧 English"
-        if st.session_state["current_lang"] == "es"
-        else "🇪🇸 Español"
+        "🇪🇸 Español"
+        if st.session_state["current_lang"] == "en"
+        else "🇬🇧 English"
     )
     if st.button(lang_btn_text, key="top_lang_switcher", type="secondary"):
         st.session_state["current_lang"] = (
-            "en" if st.session_state["current_lang"] == "es" else "es"
+            "es" if st.session_state["current_lang"] == "en" else "en"
         )
         st.rerun()
 
@@ -432,10 +471,48 @@ txt = {
         if es
         else "📅 Stock Entry History (Multiple Records)"
     ),
+    "export_btn": (
+        "📥 Exportar Base de Datos (Excel)"
+        if es
+        else "📥 Export Database (Excel)"
+    ),
+    "import_btn": (
+        "📤 Importar Base de Datos (Excel)"
+        if es
+        else "📤 Import Database (Excel)"
+    ),
 }
 
 with col_header:
     st.title(txt["title"])
+
+# -----------------------------------------------------------------------------
+# TOP EXCEL IMPORT / EXPORT BAR
+# -----------------------------------------------------------------------------
+col_exp, col_imp = st.columns([1, 1])
+
+with col_exp:
+    excel_data = export_database_to_excel()
+    st.download_button(
+        label=txt["export_btn"],
+        data=excel_data,
+        file_name=f"inventory_database_export_{datetime.now().strftime('%Y%m%d')}.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        use_container_width=True,
+    )
+
+with col_imp:
+    imported_file = st.file_uploader(
+        txt["import_btn"], type=["xlsx"], label_visibility="collapsed"
+    )
+    if imported_file is not None:
+        if st.button("Confirm Excel Import", type="primary"):
+            success, msg = import_excel_to_database(imported_file)
+            if success:
+                st.success(msg)
+                st.rerun()
+            else:
+                st.error(msg)
 
 
 # -----------------------------------------------------------------------------
@@ -582,7 +659,6 @@ if "selected_product_id" in st.session_state:
             st.markdown("### 🖼️ Photo & Technical Datasheet Upload")
             col_img, col_pdf = st.columns(2)
 
-            # Upload Image
             with col_img:
                 if safe_path_exists(product["photo_path"]):
                     st.image(
@@ -595,7 +671,6 @@ if "selected_product_id" in st.session_state:
                     "Select Photo (PNG/JPG)", type=["png", "jpg", "jpeg"]
                 )
 
-            # Upload PDF
             with col_pdf:
                 if safe_path_exists(product["datasheet_path"]):
                     st.success("🟢 Technical Datasheet Attached")
@@ -737,7 +812,6 @@ if "selected_product_id" in st.session_state:
                     clean_name = sanitize_filename(f_name)
                     clean_sku = sanitize_filename(product["sku"])
 
-                    # Save image with Product Name
                     new_photo_path = product["photo_path"]
                     if uploaded_img:
                         ext = uploaded_img.name.split(".")[-1]
@@ -746,7 +820,6 @@ if "selected_product_id" in st.session_state:
                         with open(new_photo_path, "wb") as f:
                             f.write(uploaded_img.getbuffer())
 
-                    # Save PDF with Product Name
                     new_pdf_path = product["datasheet_path"]
                     if uploaded_pdf:
                         filename = f"{clean_name}_{clean_sku}_datasheet.pdf"
