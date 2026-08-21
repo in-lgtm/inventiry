@@ -32,6 +32,17 @@ import streamlit as st
 SOURCE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 
+def safe_makedirs(path: str):
+    """os.makedirs(..., exist_ok=True) that also tolerates the FileExistsError
+    race that can happen when multiple Streamlit sessions/threads try to
+    create the same folder at the same instant."""
+    try:
+        os.makedirs(path, exist_ok=True)
+    except FileExistsError:
+        if not os.path.isdir(path):
+            raise
+
+
 def _resolve_data_dir() -> str:
     """
     Pick a writable directory to store the database and uploaded files.
@@ -54,7 +65,7 @@ def _resolve_data_dir() -> str:
 
     for candidate in candidates:
         try:
-            os.makedirs(candidate, exist_ok=True)
+            safe_makedirs(candidate)
             probe = os.path.join(candidate, ".write_test")
             with open(probe, "w") as f:
                 f.write("ok")
@@ -70,8 +81,8 @@ DB_PATH = os.path.join(BASE_DIR, "inventory.db")
 IMAGES_DIR = os.path.join(BASE_DIR, "images")
 DATASHEETS_DIR = os.path.join(BASE_DIR, "datasheets")
 
-os.makedirs(IMAGES_DIR, exist_ok=True)
-os.makedirs(DATASHEETS_DIR, exist_ok=True)
+safe_makedirs(IMAGES_DIR)
+safe_makedirs(DATASHEETS_DIR)
 
 # Password: can be overridden via .streamlit/secrets.toml with APP_PASSWORD = "..."
 # Falls back to the password below so the app works immediately out of the box.
