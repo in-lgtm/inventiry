@@ -1,700 +1,825 @@
-"""
-Material Inventory Management System
--------------------------------------
-A Streamlit app backed by a real SQLite database.
-- Product photos  -> saved in /images
-- Datasheets (PDF) -> saved in /datasheets
-- Product records + stock-entry history -> saved in inventory.db (SQLite)
-- Password-protected access
-
-Run locally:
-    pip install -r requirements.txt
-    streamlit run app.py
-
-Deploy on Streamlit Community Cloud:
-    Push this whole folder to a GitHub repo and point Streamlit Cloud's
-    "New app" wizard at app.py. No extra setup is required — the database
-    and folders are created automatically on first run.
-"""
-
 import os
-import tempfile
-import uuid
-from datetime import date, datetime
-
-import pandas as pd
 import sqlite3
+from datetime import datetime
+import pandas as pd
 import streamlit as st
+from PIL import Image
 
-# ----------------------------------------------------------------------------
-# CONFIG
-# ----------------------------------------------------------------------------
-SOURCE_DIR = os.path.dirname(os.path.abspath(__file__))
+# -----------------------------------------------------------------------------
+# APP CONFIG & DIRECTORY SETUP
+# -----------------------------------------------------------------------------
+st.set_page_config(
+    page_title="Material Inventory System",
+    page_icon="📦",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
 
+DB_FILE = "inventory.db"
+IMAGES_DIR = "images"
+DATASHEETS_DIR = "datasheets"
 
-def ensure_dir(path: str, _depth: int = 0) -> str:
-    """
-    Return a writable directory at `path`. Handles two real-world failure
-    modes seen on hosted platforms:
-      1. A race where multiple sessions/threads create the same folder at
-         once (os.makedirs(exist_ok=True) can still raise in that window).
-      2. Something already exists at `path` but is a *file*, not a folder
-         (e.g. it got uploaded to the repo as a plain file named "images"
-         instead of a real images/ directory). In that case we fall back
-         to an alternate directory name rather than crashing.
-    """
-    if os.path.isdir(path):
-        return path
-    if os.path.exists(path) and not os.path.isdir(path):
-        if _depth > 5:
-            raise OSError(f"Could not find or create a usable directory near {path}")
-        alt = path.rstrip("/\\") + "_data"
-        return ensure_dir(alt, _depth + 1)
-    try:
-        os.makedirs(path, exist_ok=True)
-        return path
-    except FileExistsError:
-        if os.path.isdir(path):
-            return path
-        if _depth > 5:
-            raise
-        alt = path.rstrip("/\\") + "_data"
-        return ensure_dir(alt, _depth + 1)
+os.makedirs(IMAGES_DIR, exist_ok=True)
+os.makedirs(DATASHEETS_DIR, exist_ok=True)
 
 
-def _resolve_data_dir() -> str:
-    """
-    Pick a writable directory to store the database and uploaded files.
-    Some hosts (Streamlit Community Cloud, certain containers) mount the
-    source folder read-only, so writing next to app.py can fail with a
-    PermissionError. This tries, in order:
-      1. DATA_DIR environment variable, if set (lets you point at a
-         mounted persistent volume on Railway/Render/etc.)
-      2. the folder app.py lives in (works on most hosts, and keeps data
-         next to the code for easy local development)
-      3. a folder under the system temp directory (always writable, but
-         not persistent across restarts — used only as a last resort)
-    """
-    candidates = []
-    env_dir = os.environ.get("DATA_DIR")
-    if env_dir:
-        candidates.append(env_dir)
-    candidates.append(SOURCE_DIR)
-    candidates.append(os.path.join(tempfile.gettempdir(), "material_inventory_data"))
-
-    for candidate in candidates:
-        try:
-            resolved = ensure_dir(candidate)
-            probe = os.path.join(resolved, ".write_test")
-            with open(probe, "w") as f:
-                f.write("ok")
-            os.remove(probe)
-            return resolved
-        except OSError:
-            continue
-    return tempfile.mkdtemp(prefix="material_inventory_")
-
-
-BASE_DIR = _resolve_data_dir()
-DB_PATH = os.path.join(BASE_DIR, "inventory.db")
-IMAGES_DIR = ensure_dir(os.path.join(BASE_DIR, "images"))
-DATASHEETS_DIR = ensure_dir(os.path.join(BASE_DIR, "datasheets"))
-
-# Password: can be overridden via .streamlit/secrets.toml with APP_PASSWORD = "..."
-# Falls back to the password below so the app works immediately out of the box.
-try:
-    APP_PASSWORD = st.secrets["APP_PASSWORD"]
-except Exception:
-    APP_PASSWORD = "Clearnanotech12@"
-
-st.set_page_config(page_title="Material Inventory Management System", page_icon="📦", layout="wide")
-
-ICONS = ["📦", "🏷️", "🧪", "⚡", "🛢️", "🔧"]
-
-PRODUCT_FIELDS = [
-    "sku", "icon", "product", "description", "where_used", "characteristics",
-    "source_origin", "batch_lot", "sds_hazard_class", "temp_range", "cure_time", "mix_ratio",
-    "suppliers", "price", "discount", "transport_price", "expiring_date", "delivery_time",
-    "ubication", "monthly_usage", "min_stock", "quantity", "photo_path", "datasheet_path",
-]
-
-# ----------------------------------------------------------------------------
-# DATABASE
-# ----------------------------------------------------------------------------
-@st.cache_resource
-def get_connection():
-    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+# -----------------------------------------------------------------------------
+# DATABASE INITIALIZATION & HELPERS
+# -----------------------------------------------------------------------------
+def get_db_connection():
+    conn = sqlite3.connect(DB_FILE)
     conn.row_factory = sqlite3.Row
     return conn
 
 
-conn = get_connection()
-
-
-def insert_product(data: dict) -> int:
-    cur = conn.cursor()
-    cols = PRODUCT_FIELDS + ["created_at"]
-    values = [data.get(f) for f in PRODUCT_FIELDS] + [datetime.now().isoformat()]
-    placeholders = ",".join(["?"] * len(cols))
-    cur.execute(f"INSERT INTO products ({','.join(cols)}) VALUES ({placeholders})", values)
-    conn.commit()
-    return cur.lastrowid
-
-
-def update_product(product_id: int, data: dict):
-    if not data:
-        return
-    cur = conn.cursor()
-    sets = ",".join([f"{f}=?" for f in data.keys()])
-    values = list(data.values()) + [product_id]
-    cur.execute(f"UPDATE products SET {sets} WHERE id=?", values)
-    conn.commit()
-
-
-def get_product(product_id: int):
-    cur = conn.cursor()
-    cur.execute("SELECT * FROM products WHERE id=?", (product_id,))
-    return cur.fetchone()
-
-
-def get_all_products() -> pd.DataFrame:
-    return pd.read_sql_query("SELECT * FROM products ORDER BY id DESC", conn)
-
-
-def delete_product_db(product_id: int):
-    p = get_product(product_id)
-    if p:
-        for col in ("photo_path", "datasheet_path"):
-            rel = p[col]
-            if rel:
-                full = os.path.join(BASE_DIR, rel)
-                if os.path.exists(full):
-                    try:
-                        os.remove(full)
-                    except OSError:
-                        pass
-    cur = conn.cursor()
-    cur.execute("DELETE FROM stock_entries WHERE product_id=?", (product_id,))
-    cur.execute("DELETE FROM products WHERE id=?", (product_id,))
-    conn.commit()
-
-
-def get_entries(product_id: int) -> pd.DataFrame:
-    return pd.read_sql_query(
-        "SELECT * FROM stock_entries WHERE product_id=? ORDER BY entry_date ASC, id ASC",
-        conn, params=(product_id,),
-    )
-
-
-def add_stock_entry_db(product_id: int, entry_date: str, quantity: float, price: float, note: str):
-    cur = conn.cursor()
-    cur.execute(
-        "INSERT INTO stock_entries (product_id, entry_date, quantity, price, note) VALUES (?,?,?,?,?)",
-        (product_id, entry_date, quantity, price, note or ""),
-    )
-    # Mirror the pattern from the original app: latest entry becomes current qty/price
-    cur.execute("UPDATE products SET quantity=?, price=? WHERE id=?", (quantity, price, product_id))
-    conn.commit()
-
-
-def delete_stock_entry_db(entry_id: int, product_id: int):
-    cur = conn.cursor()
-    cur.execute("DELETE FROM stock_entries WHERE id=?", (entry_id,))
-    conn.commit()
-    remaining = get_entries(product_id)
-    if not remaining.empty:
-        latest = remaining.iloc[-1]
-        cur.execute(
-            "UPDATE products SET quantity=?, price=? WHERE id=?",
-            (float(latest["quantity"]), float(latest["price"]), product_id),
-        )
-        conn.commit()
-
-
-def seed_default_data():
-    samples = [
-        dict(sku="MAT-VEL-401", icon="🏷️", product="Velcro 401 Black",
-             description="1 Box x 350m + 8 units x 25m. Total: 550m.",
-             where_used="Vertical/horizontal textile fastening and modular panels.",
-             characteristics="1 Box = 14 U | Breakdown: 1 Box x 350m + 8 U x 25m",
-             source_origin="Barcelona, Spain", batch_lot="LOT-VEL401-26", sds_hazard_class="Non-hazardous",
-             temp_range="-20C to +90C", cure_time="Immediate", mix_ratio="N/A",
-             suppliers="Velcro Industrial", price=120.00, discount=5, transport_price=10.00,
-             expiring_date="2030-12-31", delivery_time=5, ubication="Zone A - Rack 01",
-             monthly_usage=200, min_stock=250, quantity=550,
-             entries=[("2026-08-01", 500, 115.00, "Initial monthly batch"),
-                      ("2026-08-21", 550, 120.00, "Restock update (+50m)")]),
-        dict(sku="MAT-VEL-758", icon="🏷️", product="Velcro 758 Black",
-             description="20 Box x 495m + 7 units x 45m. Total: 10,215m.",
-             where_used="Closure of large covers and insulating curtains.",
-             characteristics="1 Box = 11 U | Breakdown: 20 Box x 495m + 7 U x 45m",
-             source_origin="Barcelona, Spain", batch_lot="LOT-VEL758-26", sds_hazard_class="Non-hazardous",
-             temp_range="-20C to +90C", cure_time="Immediate", mix_ratio="N/A",
-             suppliers="Velcro Industrial", price=180.00, discount=8, transport_price=15.00,
-             expiring_date="2030-12-31", delivery_time=5, ubication="Zone A - Rack 02",
-             monthly_usage=1500, min_stock=2000, quantity=10215,
-             entries=[("2026-08-05", 10000, 175.00, "Bulk shipment"),
-                      ("2026-08-21", 10215, 180.00, "Inventory check update")]),
-        dict(sku="MAT-GLU-TUN400", icon="🧪", product="Glue Tunsan 400 ml",
-             description="23 Box x 28 U + 10 loose units. Total: 654 U.",
-             where_used="Fast sealing of casings and light adhesion.",
-             characteristics="1 Box = 28 U | Breakdown: 23 Box x 28 U + 10 U loose",
-             source_origin="Valencia, Spain", batch_lot="LOT-TUN-400-A", sds_hazard_class="Class 3 Flammable",
-             temp_range="-10C to +80C", cure_time="20 min", mix_ratio="Single-component",
-             suppliers="Tunsan Chemical Supplies", price=8.50, discount=5, transport_price=0.80,
-             expiring_date="2027-06-30", delivery_time=4, ubication="Zone B - Shelf 01",
-             monthly_usage=150, min_stock=100, quantity=654,
-             entries=[("2026-08-10", 600, 8.20, "Initial delivery"),
-                      ("2026-08-21", 654, 8.50, "Weekly count (+54 U)")]),
-        dict(sku="MAT-GLU-HUI600", icon="🧪", product="Glue HUITIAN 600 ml",
-             description="15 loose units. Total: 15 U.",
-             where_used="Elastic and industrial sealing of partitions.",
-             characteristics="1 Box = 20 U | Total Stock: 15 U loose",
-             source_origin="Hubei, China", batch_lot="LOT-HUI-600X", sds_hazard_class="Irritant",
-             temp_range="-30C to +100C", cure_time="24h", mix_ratio="Single-component",
-             suppliers="Huitian Adhesives", price=12.00, discount=0, transport_price=1.20,
-             expiring_date="2027-04-15", delivery_time=7, ubication="Zone B - Shelf 02",
-             monthly_usage=30, min_stock=20, quantity=15,
-             entries=[("2026-08-15", 15, 12.00, "Remaining stock check")]),
-        dict(sku="MAT-GLU-DOW600", icon="🧪", product="Glue DOW 600 ml",
-             description="13 loose units. Total: 13 U.",
-             where_used="Glass sealing and structural joints.",
-             characteristics="1 Box = 20 U | Total Stock: 13 U loose",
-             source_origin="Wiesbaden, Germany", batch_lot="LOT-DOW-600D", sds_hazard_class="Low VOC",
-             temp_range="-40C to +120C", cure_time="12h", mix_ratio="Single-component",
-             suppliers="Dow Chemical Europe", price=16.50, discount=10, transport_price=1.50,
-             expiring_date="2027-09-30", delivery_time=3, ubication="Zone B - Shelf 03",
-             monthly_usage=40, min_stock=25, quantity=13,
-             entries=[("2026-08-15", 13, 16.50, "Stock count")]),
-        dict(sku="MAT-GLU-SEA600", icon="🧪", product="Glue SEAL 600 ml",
-             description="3 Box x 12 U. Total: 36 U.",
-             where_used="Waterproof sealing of frames and moldings.",
-             characteristics="1 Box = 12 U | Breakdown: 3 Box x 12 U",
-             source_origin="Milan, Italy", batch_lot="LOT-SEA-36X", sds_hazard_class="Non-hazardous",
-             temp_range="-20C to +90C", cure_time="24h", mix_ratio="Single-component",
-             suppliers="Seal Industrial Solutions", price=11.00, discount=0, transport_price=1.00,
-             expiring_date="2027-08-10", delivery_time=5, ubication="Zone B - Shelf 04",
-             monthly_usage=25, min_stock=15, quantity=36,
-             entries=[("2026-08-15", 36, 11.00, "Full boxes count")]),
-        dict(sku="MAT-PV-TRAD", icon="⚡", product="PV TRADICIONAL",
-             description="23 U. Total: 23 U.",
-             where_used="Installation on traditional solar roofs.",
-             characteristics="Standard Photovoltaic Module | Total Stock: 23 U",
-             source_origin="Madrid, Spain", batch_lot="LOT-PV-TRAD-01", sds_hazard_class="Electrical",
-             temp_range="-40C to +85C", cure_time="N/A", mix_ratio="N/A",
-             suppliers="PV Solar Tech", price=140.00, discount=12, transport_price=12.00,
-             expiring_date="2035-12-31", delivery_time=10, ubication="Zone C - Rack PV1",
-             monthly_usage=15, min_stock=10, quantity=23,
-             entries=[("2026-08-15", 23, 140.00, "Warehouse check")]),
-        dict(sku="MAT-PV-560W", icon="⚡", product="PV 560W",
-             description="5 U. Total: 5 U.",
-             where_used="High-density solar power generation.",
-             characteristics="High Efficiency Photovoltaic Panel 560W | Total Stock: 5 U",
-             source_origin="Jiangsu, China", batch_lot="LOT-PV-560W-26", sds_hazard_class="Electrical",
-             temp_range="-40C to +85C", cure_time="N/A", mix_ratio="N/A",
-             suppliers="PV Solar Tech", price=210.00, discount=15, transport_price=18.00,
-             expiring_date="2035-12-31", delivery_time=10, ubication="Zone C - Rack PV2",
-             monthly_usage=8, min_stock=10, quantity=5,
-             entries=[("2026-08-15", 5, 210.00, "Initial batch")]),
-        dict(sku="MAT-PV-WGV", icon="📦", product="PV White Glue Velcro Vertical",
-             description="127 U. Total: 127 U.",
-             where_used="Fast photovoltaic assembly, vertical position on tarp.",
-             characteristics="White PV Panel with Integrated Vertical Velcro | Total Stock: 127 U",
-             source_origin="Porto, Portugal", batch_lot="LOT-PV-WGV-127", sds_hazard_class="Non-hazardous",
-             temp_range="-30C to +85C", cure_time="N/A", mix_ratio="N/A",
-             suppliers="Custom Solar Flex", price=165.00, discount=10, transport_price=14.00,
-             expiring_date="2032-12-31", delivery_time=7, ubication="Zone C - Rack PV3",
-             monthly_usage=50, min_stock=30, quantity=127,
-             entries=[("2026-08-15", 127, 165.00, "Stock check")]),
-        dict(sku="MAT-PV-WGH", icon="📦", product="PV White Glue Velcro Horizontal",
-             description="2 U. Total: 2 U.",
-             where_used="Fast photovoltaic assembly, horizontal position.",
-             characteristics="White PV Panel with Integrated Horizontal Velcro | Total Stock: 2 U",
-             source_origin="Porto, Portugal", batch_lot="LOT-PV-WGH-02", sds_hazard_class="Non-hazardous",
-             temp_range="-30C to +85C", cure_time="N/A", mix_ratio="N/A",
-             suppliers="Custom Solar Flex", price=165.00, discount=10, transport_price=14.00,
-             expiring_date="2032-12-31", delivery_time=7, ubication="Zone C - Rack PV3",
-             monthly_usage=20, min_stock=15, quantity=2,
-             entries=[("2026-08-15", 2, 165.00, "Remaining units")]),
-        dict(sku="MAT-PV-WHITE", icon="📦", product="PV White",
-             description="110 U. Total: 110 U.",
-             where_used="White photovoltaic architectural integration.",
-             characteristics="Standard White Flex PV Module | Total Stock: 110 U",
-             source_origin="Porto, Portugal", batch_lot="LOT-PV-W-110", sds_hazard_class="Non-hazardous",
-             temp_range="-30C to +85C", cure_time="N/A", mix_ratio="N/A",
-             suppliers="Custom Solar Flex", price=150.00, discount=8, transport_price=12.00,
-             expiring_date="2032-12-31", delivery_time=6, ubication="Zone C - Rack PV4",
-             monthly_usage=40, min_stock=25, quantity=110,
-             entries=[("2026-08-15", 110, 150.00, "Stock count")]),
-        dict(sku="MAT-PV-BLACK", icon="📦", product="PV Black",
-             description="32 U. Total: 32 U.",
-             where_used="Full Black aesthetic installations on dark surfaces.",
-             characteristics="Full Black Flex PV Module | Total Stock: 32 U",
-             source_origin="Porto, Portugal", batch_lot="LOT-PV-B-32", sds_hazard_class="Non-hazardous",
-             temp_range="-30C to +85C", cure_time="N/A", mix_ratio="N/A",
-             suppliers="Custom Solar Flex", price=155.00, discount=8, transport_price=12.00,
-             expiring_date="2032-12-31", delivery_time=6, ubication="Zone C - Rack PV4",
-             monthly_usage=30, min_stock=20, quantity=32,
-             entries=[("2026-08-15", 32, 155.00, "Stock count")]),
-    ]
-    for s in samples:
-        entries = s.pop("entries")
-        s["photo_path"] = None
-        s["datasheet_path"] = None
-        pid = insert_product(s)
-        cur = conn.cursor()
-        for e_date, e_qty, e_price, e_note in entries:
-            cur.execute(
-                "INSERT INTO stock_entries (product_id, entry_date, quantity, price, note) VALUES (?,?,?,?,?)",
-                (pid, e_date, e_qty, e_price, e_note),
-            )
-        conn.commit()
-
-
 def init_db():
-    cur = conn.cursor()
-    cur.execute("""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+
+    # Table 1: Products
+    cursor.execute("""
         CREATE TABLE IF NOT EXISTS products (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            sku TEXT, icon TEXT, product TEXT, description TEXT, where_used TEXT,
-            characteristics TEXT, source_origin TEXT, batch_lot TEXT, sds_hazard_class TEXT,
-            temp_range TEXT, cure_time TEXT, mix_ratio TEXT, suppliers TEXT,
-            price REAL DEFAULT 0, discount REAL DEFAULT 0, transport_price REAL DEFAULT 0,
-            expiring_date TEXT, delivery_time REAL DEFAULT 0, ubication TEXT,
-            monthly_usage REAL DEFAULT 0, min_stock REAL DEFAULT 0, quantity REAL DEFAULT 0,
-            photo_path TEXT, datasheet_path TEXT, created_at TEXT
+            icon TEXT DEFAULT '📦',
+            sku TEXT UNIQUE NOT NULL,
+            product TEXT NOT NULL,
+            characteristics TEXT,
+            suppliers TEXT,
+            price REAL DEFAULT 0.0,
+            discount REAL DEFAULT 0.0,
+            transport_price REAL DEFAULT 0.0,
+            expiring_date TEXT,
+            delivery_time INTEGER DEFAULT 5,
+            ubication TEXT,
+            monthly_usage INTEGER DEFAULT 0,
+            min_stock INTEGER DEFAULT 0,
+            quantity REAL DEFAULT 0.0,
+            description TEXT,
+            where_used TEXT,
+            source_origin TEXT,
+            batch_lot TEXT,
+            sds_hazard_class TEXT,
+            photo_path TEXT,
+            datasheet_path TEXT
         )
     """)
-    cur.execute("""
+
+    # Table 2: Multiple Entries / Stock History
+    cursor.execute("""
         CREATE TABLE IF NOT EXISTS stock_entries (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             product_id INTEGER NOT NULL,
-            entry_date TEXT, quantity REAL, price REAL, note TEXT,
+            entry_date TEXT NOT NULL,
+            quantity REAL NOT NULL,
+            price REAL NOT NULL,
+            note TEXT,
             FOREIGN KEY (product_id) REFERENCES products (id) ON DELETE CASCADE
         )
     """)
+
+    # Seed Default 12 Materials if DB is empty
+    cursor.execute("SELECT COUNT(*) FROM products")
+    if cursor.fetchone()[0] == 0:
+        seed_data = [
+            (
+                "🏷️",
+                "MAT-VEL-401",
+                "Velcro 401 Black",
+                "1 Box = 14 U | Breakdown: 1 Box x 350 mts + 8 U x 25 mts",
+                "Velcro Industrial",
+                120.00,
+                5.0,
+                10.00,
+                "2030-12-31",
+                5,
+                "Zone A - Rack 01",
+                200,
+                250,
+                550.0,
+                "1 Box x 350 mts (350m) + 8 U x 25 mts (200m). Total: 550 mts.",
+                "Fijación textil vertical/horizontal y paneles modulares.",
+                "Barcelona, España",
+                "LOT-VEL401-26",
+                "No peligroso",
+            ),
+            (
+                "🏷️",
+                "MAT-VEL-758",
+                "Velcro 758 Black",
+                "1 Box = 11 U | Breakdown: 20 Box x 495 mts + 7 U x 45 mts",
+                "Velcro Industrial",
+                180.00,
+                8.0,
+                15.00,
+                "2030-12-31",
+                5,
+                "Zone A - Rack 02",
+                1500,
+                2000,
+                10215.0,
+                "20 Box x 495 mts (9,900m) + 7 U x 45 mts (315m). Total: 10,215 mts.",
+                "Cierre de cubiertas de gran envergadura y cortinas aislantes.",
+                "Barcelona, España",
+                "LOT-VEL758-26",
+                "No peligroso",
+            ),
+            (
+                "🧪",
+                "MAT-GLU-TUN400",
+                "Glue Tunsan 400 ml",
+                "1 Box = 28 U | Breakdown: 23 Box x 28 U + 10 U loose",
+                "Tunsan Chemical Supplies",
+                8.50,
+                5.0,
+                0.80,
+                "2027-06-30",
+                4,
+                "Zone B - Shelf 01",
+                150,
+                100,
+                654.0,
+                "23 Box x 28 U (644 U) + 10 U sueltas. Total: 654 U.",
+                "Sellado rápido de carcasas y adhesión ligera.",
+                "Valencia, España",
+                "LOT-TUN-400-A",
+                "Clase 3 Inflamable",
+            ),
+            (
+                "🧪",
+                "MAT-GLU-HUI600",
+                "Glue HUITIAN 600 ml",
+                "1 Box = 20 U | Total Stock: 15 U loose",
+                "Huitian Adhesives",
+                12.00,
+                0.0,
+                1.20,
+                "2027-04-15",
+                7,
+                "Zone B - Shelf 02",
+                30,
+                20,
+                15.0,
+                "15 U sueltas. Total: 15 U.",
+                "Sellado elástico e industrial de mamparas.",
+                "Hubei, China",
+                "LOT-HUI-600X",
+                "Irritante",
+            ),
+            (
+                "🧪",
+                "MAT-GLU-DOW600",
+                "Glue DOW 600 ml",
+                "1 Box = 20 U | Total Stock: 13 U loose",
+                "Dow Chemical Europe",
+                16.50,
+                10.0,
+                1.50,
+                "2027-09-30",
+                3,
+                "Zone B - Shelf 03",
+                40,
+                25,
+                13.0,
+                "13 U sueltas. Total: 13 U.",
+                "Sellado de cristales y juntas estructurales.",
+                "Wiesbaden, Alemania",
+                "LOT-DOW-600D",
+                "Bajo VOC",
+            ),
+            (
+                "🧪",
+                "MAT-GLU-SEA600",
+                "Glue SEAL 600 ml",
+                "1 Box = 12 U | Breakdown: 3 Box x 12 U",
+                "Seal Industrial Solutions",
+                11.00,
+                0.0,
+                1.00,
+                "2027-08-10",
+                5,
+                "Zone B - Shelf 04",
+                25,
+                15,
+                36.0,
+                "3 Box x 12 U. Total: 36 U.",
+                "Sellado impermeable de marcos y molduras.",
+                "Milán, Italia",
+                "LOT-SEA-36X",
+                "No peligroso",
+            ),
+            (
+                "⚡",
+                "MAT-PV-TRAD",
+                "PV TRADICIONAL",
+                "Módulo Fotovoltaico Estándar | Total Stock: 23 U",
+                "PV Solar Tech",
+                140.00,
+                12.0,
+                12.00,
+                "2035-12-31",
+                10,
+                "Zone C - Rack PV1",
+                15,
+                10,
+                23.0,
+                "23 U. Total: 23 U.",
+                "Instalación en cubiertas solares tradicionales.",
+                "Madrid, España",
+                "LOT-PV-TRAD-01",
+                "Eléctrico",
+            ),
+            (
+                "⚡",
+                "MAT-PV-560W",
+                "PV 560W",
+                "Panel Fotovoltaico Alta Eficiencia 560W | Total Stock: 5 U",
+                "PV Solar Tech",
+                210.00,
+                15.0,
+                18.00,
+                "2035-12-31",
+                10,
+                "Zone C - Rack PV2",
+                8,
+                10,
+                5.0,
+                "5 U. Total: 5 U.",
+                "Generación de energía solar de alta densidad.",
+                "Jiangsu, China",
+                "LOT-PV-560W-26",
+                "Eléctrico",
+            ),
+            (
+                "📦",
+                "MAT-PV-WGV",
+                "PV White Glue Velcro Vertical",
+                "Panel PV Blanco con Velcro Vertical Integrado | Total Stock: 127 U",
+                "Custom Solar Flex",
+                165.00,
+                10.0,
+                14.00,
+                "2032-12-31",
+                7,
+                "Zone C - Rack PV3",
+                50,
+                30,
+                127.0,
+                "127 U. Total: 127 U.",
+                "Montaje rápido fotovoltaico en posición vertical sobre lona.",
+                "Oporto, Portugal",
+                "LOT-PV-WGV-127",
+                "No peligroso",
+            ),
+            (
+                "📦",
+                "MAT-PV-WGH",
+                "PV White Glue Velcro Horizontal",
+                "Panel PV Blanco con Velcro Horizontal Integrado | Total Stock: 2 U",
+                "Custom Solar Flex",
+                165.00,
+                10.0,
+                14.00,
+                "2032-12-31",
+                7,
+                "Zone C - Rack PV3",
+                20,
+                15,
+                2.0,
+                "2 U. Total: 2 U.",
+                "Montaje rápido fotovoltaico en posición horizontal.",
+                "Oporto, Portugal",
+                "LOT-PV-WGH-02",
+                "No peligroso",
+            ),
+            (
+                "📦",
+                "MAT-PV-WHITE",
+                "PV White",
+                "Módulo PV Flex Blanco Estándar | Total Stock: 110 U",
+                "Custom Solar Flex",
+                150.00,
+                8.0,
+                12.00,
+                "2032-12-31",
+                6,
+                "Zone C - Rack PV4",
+                40,
+                25,
+                110.0,
+                "110 U. Total: 110 U.",
+                "Integración arquitectónica fotovoltaica blanca.",
+                "Oporto, Portugal",
+                "LOT-PV-W-110",
+                "No peligroso",
+            ),
+            (
+                "📦",
+                "MAT-PV-BLACK",
+                "PV Black",
+                "Módulo PV Flex Negro Full Black | Total Stock: 32 U",
+                "Custom Solar Flex",
+                155.00,
+                8.0,
+                12.00,
+                "2032-12-31",
+                6,
+                "Zone C - Rack PV4",
+                30,
+                20,
+                32.0,
+                "32 U. Total: 32 U.",
+                "Instalaciones estéticas Full Black sobre superficie oscura.",
+                "Oporto, Portugal",
+                "LOT-PV-B-32",
+                "No peligroso",
+            ),
+        ]
+
+        for item in seed_data:
+            cursor.execute(
+                """
+                INSERT INTO products (
+                    icon, sku, product, characteristics, suppliers, price, discount, transport_price,
+                    expiring_date, delivery_time, ubication, monthly_usage, min_stock, quantity,
+                    description, where_used, source_origin, batch_lot, sds_hazard_class
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+                item,
+            )
+
+            # Add initial stock entry history
+            prod_id = cursor.lastrowid
+            cursor.execute(
+                """
+                INSERT INTO stock_entries (product_id, entry_date, quantity, price, note)
+                VALUES (?, ?, ?, ?, ?)
+            """,
+                (
+                    prod_id,
+                    datetime.now().strftime("%Y-%m-%d"),
+                    item[13],
+                    item[5],
+                    "Initial Record (19/08/2026)",
+                ),
+            )
+
     conn.commit()
-    cur.execute("SELECT COUNT(*) FROM products")
-    if cur.fetchone()[0] == 0:
-        seed_default_data()
+    conn.close()
 
 
 init_db()
 
-# ----------------------------------------------------------------------------
-# HELPERS
-# ----------------------------------------------------------------------------
-def save_uploaded_file(uploaded_file, directory: str, prefix: str) -> str:
-    safe_prefix = "".join(c for c in (prefix or "product") if c.isalnum() or c in "-_") or "product"
-    ext = os.path.splitext(uploaded_file.name)[1]
-    fname = f"{safe_prefix}_{uuid.uuid4().hex[:8]}{ext}"
-    full_path = os.path.join(directory, fname)
-    with open(full_path, "wb") as f:
-        f.write(uploaded_file.getbuffer())
-    rel_dir = os.path.basename(directory)
-    return f"{rel_dir}/{fname}"
+
+# -----------------------------------------------------------------------------
+# LANDED COST FORMULA CALCULATOR
+# -----------------------------------------------------------------------------
+def calc_landed_cost(price, discount, transport):
+    price = price or 0.0
+    discount = discount or 0.0
+    transport = transport or 0.0
+    return round((price * (1 - discount / 100.0)) + transport, 2)
 
 
-def calc_landed_cost(price, discount, transport) -> float:
-    price = price or 0
-    discount = discount or 0
-    transport = transport or 0
-    return round((price * (1 - discount / 100)) + transport, 2)
+# -----------------------------------------------------------------------------
+# STREAMLIT SIDEBAR CONTROLS & LANGUAGE
+# -----------------------------------------------------------------------------
+st.sidebar.title("⚙️ Controls / Control")
+
+lang = st.sidebar.radio("Language / Idioma", ["Español", "English"])
+es = lang == "Español"
+
+# Language Dictionary
+txt = {
+    "title": (
+        "📦 INVENTARIO DE MATERIALES" if es else "📦 MATERIAL INVENTORY SYSTEM"
+    ),
+    "search_lbl": "🔍 Búsqueda Universal" if es else "🔍 Universal Search",
+    "search_ph": (
+        "Buscar por Velcro, Tunsan, Dow, PV, Zona A..."
+        if es
+        else "Search by Velcro, Tunsan, Dow, PV, Zone A..."
+    ),
+    "sort_lbl": "Orden / Ranking" if es else "Sort / Ranking",
+    "tab1": "🎴 Tarjetas / Vista Modal" if es else "🎴 Cards / Modal View",
+    "tab2": "📊 Tabla Master Excel" if es else "📊 Master Excel Table",
+    "add_btn": "➕ Añadir Nuevo Producto" if es else "➕ Add New Product",
+    "save_btn": "💾 Guardar Cambios" if es else "💾 Save Changes",
+    "delete_btn": "🗑️ Eliminar Producto" if es else "🗑️ Delete Product",
+    "landed": "Coste Final Net" if es else "Landed Cost",
+    "low_stock": "🚨 STOCK BAJO" if es else "🚨 LOW STOCK",
+    "ok_stock": "🟢 STOCK OK" if es else "🟢 STOCK OK",
+    "entries_sec": (
+        "📅 Historial de Entradas (Múltiples Registros)"
+        if es
+        else "📅 Stock Entry History (Multiple Records)"
+    ),
+}
+
+st.title(txt["title"])
 
 
-# ----------------------------------------------------------------------------
-# AUTH
-# ----------------------------------------------------------------------------
-def check_password() -> bool:
-    if st.session_state.get("authenticated"):
-        return True
-    st.markdown("## 🔒 Material Inventory Management System")
-    st.caption("Enter the access password to continue.")
-    with st.form("login_form"):
-        pwd = st.text_input("Password", type="password")
-        submitted = st.form_submit_button("Log in")
-    if submitted:
-        if pwd == APP_PASSWORD:
-            st.session_state.authenticated = True
-            st.rerun()
-        else:
-            st.error("Incorrect password.")
-    return False
+# -----------------------------------------------------------------------------
+# DATA FETCHING & FILTERING
+# -----------------------------------------------------------------------------
+def load_products():
+    conn = get_db_connection()
+    df = pd.read_sql_query("SELECT * FROM products", conn)
+    conn.close()
 
-
-if not check_password():
-    st.stop()
-
-# ----------------------------------------------------------------------------
-# PRODUCT DIALOG (add / edit / delete / stock entries)
-# ----------------------------------------------------------------------------
-@st.dialog("Product Details")
-def product_dialog(product_id=None):
-    is_new = product_id is None
-    if is_new:
-        p = {f: "" for f in PRODUCT_FIELDS}
-        p.update(price=0.0, discount=0.0, transport_price=0.0, delivery_time=0.0,
-                 monthly_usage=0.0, min_stock=0.0, quantity=0.0,
-                 expiring_date=str(date.today()), icon="📦")
-        entries_df = pd.DataFrame(columns=["id", "entry_date", "quantity", "price", "note"])
-        title = "➕ New Product"
-    else:
-        row = get_product(product_id)
-        if row is None:
-            st.error("Product not found.")
-            return
-        p = dict(row)
-        entries_df = get_entries(product_id)
-        title = f"{p.get('icon') or '📦'} {p.get('product')}"
-
-    st.subheader(title)
-    if not is_new:
-        st.caption(f"SKU: {p.get('sku') or '-'}  |  Supplier: {p.get('suppliers') or '-'}  |  Location: {p.get('ubication') or '-'}")
-
-    st.markdown("#### 🖼️ Product Photo")
-    pc1, pc2 = st.columns([1, 2])
-    with pc1:
-        if p.get("photo_path") and os.path.exists(os.path.join(BASE_DIR, p["photo_path"])):
-            st.image(os.path.join(BASE_DIR, p["photo_path"]), width=160)
-        else:
-            st.markdown(
-                "<div style='height:110px;width:140px;background:#1e293b;color:#94a3b8;"
-                "display:flex;align-items:center;justify-content:center;border-radius:8px;"
-                "font-size:11px;font-weight:700;text-align:center;'>NO PHOTO</div>",
-                unsafe_allow_html=True,
-            )
-    with pc2:
-        photo_file = st.file_uploader("Upload photo (PNG/JPG)", type=["png", "jpg", "jpeg"], key=f"photo_{product_id}")
-
-    st.markdown("#### 📄 Technical Datasheet")
-    dc1, dc2 = st.columns([1, 2])
-    with dc1:
-        if p.get("datasheet_path") and os.path.exists(os.path.join(BASE_DIR, p["datasheet_path"])):
-            st.success("Datasheet attached")
-            with open(os.path.join(BASE_DIR, p["datasheet_path"]), "rb") as f:
-                st.download_button("⬇️ Download", f, file_name=os.path.basename(p["datasheet_path"]), key=f"dl_{product_id}")
-        else:
-            st.warning("No datasheet attached")
-    with dc2:
-        datasheet_file = st.file_uploader("Upload datasheet (PDF/Image)", type=["pdf", "png", "jpg", "jpeg"], key=f"ds_{product_id}")
-
-    st.markdown("#### 📘 Overview")
-    product_name = st.text_input("Product Name", value=p.get("product") or "")
-    sku = st.text_input("SKU", value=p.get("sku") or "")
-    icon = st.selectbox("Icon", ICONS, index=ICONS.index(p.get("icon")) if p.get("icon") in ICONS else 0)
-    description = st.text_area("Description / Breakdown", value=p.get("description") or "", height=70)
-    where_used = st.text_area("Where Used (Assembly line / process)", value=p.get("where_used") or "", height=70)
-    characteristics = st.text_area("Characteristics & Packaging Format", value=p.get("characteristics") or "", height=70)
-
-    st.markdown("#### 🔬 Technical Data")
-    t1, t2, t3 = st.columns(3)
-    with t1:
-        source_origin = st.text_input("Source Origin", value=p.get("source_origin") or "")
-        temp_range = st.text_input("Temp Range", value=p.get("temp_range") or "")
-    with t2:
-        batch_lot = st.text_input("Batch / Lot #", value=p.get("batch_lot") or "")
-        cure_time = st.text_input("Cure Time", value=p.get("cure_time") or "")
-    with t3:
-        sds_hazard_class = st.text_input("SDS Classification", value=p.get("sds_hazard_class") or "")
-        mix_ratio = st.text_input("Mix Ratio", value=p.get("mix_ratio") or "")
-
-    st.markdown("#### 📦 Inventory Controls")
-    i1, i2, i3, i4 = st.columns(4)
-    with i1:
-        quantity = st.number_input("Total Quantity", value=float(p.get("quantity") or 0))
-    with i2:
-        min_stock = st.number_input("Min Stock", value=float(p.get("min_stock") or 0))
-    with i3:
-        ubication = st.text_input("Location", value=p.get("ubication") or "")
-    with i4:
-        try:
-            exp_default = datetime.strptime(p.get("expiring_date") or str(date.today()), "%Y-%m-%d").date()
-        except Exception:
-            exp_default = date.today()
-        expiring_date = st.date_input("Expiration Date", value=exp_default)
-
-    st.markdown("#### 💰 Pricing & Supplier")
-    s1, s2, s3, s4 = st.columns(4)
-    with s1:
-        suppliers = st.text_input("Supplier", value=p.get("suppliers") or "")
-    with s2:
-        price = st.number_input("Price (€)", value=float(p.get("price") or 0), step=0.01, format="%.2f")
-    with s3:
-        discount = st.number_input("Discount (%)", value=float(p.get("discount") or 0))
-    with s4:
-        transport_price = st.number_input("Transport (€)", value=float(p.get("transport_price") or 0), step=0.01, format="%.2f")
-
-    d1, d2 = st.columns(2)
-    with d1:
-        delivery_time = st.number_input("Delivery Time (days)", value=float(p.get("delivery_time") or 0))
-    with d2:
-        monthly_usage = st.number_input("Monthly Usage", value=float(p.get("monthly_usage") or 0))
-
-    st.caption(f"📊 Landed Cost: €{calc_landed_cost(price, discount, transport_price):.2f}")
-
-    if not is_new:
-        st.markdown("#### 📅 Stock Entry History")
-        if not entries_df.empty:
-            st.dataframe(entries_df[["entry_date", "quantity", "price", "note"]], width="stretch", hide_index=True)
-            options = [None] + list(entries_df["id"])
-            del_id = st.selectbox("Delete an entry", options=options, format_func=lambda x: "—" if x is None else f"Entry #{x}")
-            if del_id and st.button("🗑️ Delete selected entry"):
-                delete_stock_entry_db(int(del_id), product_id)
-                st.rerun()
-        else:
-            st.caption("No entries recorded.")
-
-        st.markdown("##### ➕ Add New Stock Entry")
-        e1, e2, e3, e4 = st.columns(4)
-        with e1:
-            e_date = st.date_input("Entry date", value=date.today(), key=f"edate_{product_id}")
-        with e2:
-            e_qty = st.number_input("Entry quantity", value=0.0, key=f"eqty_{product_id}")
-        with e3:
-            e_price = st.number_input("Entry price (€)", value=0.0, step=0.01, format="%.2f", key=f"eprice_{product_id}")
-        with e4:
-            e_note = st.text_input("Note", key=f"enote_{product_id}")
-        if st.button("➕ Add Entry"):
-            add_stock_entry_db(product_id, str(e_date), e_qty, e_price, e_note)
-            st.rerun()
-
-    st.divider()
-    b1, b2, b3 = st.columns(3)
-    save_clicked = b1.button("💾 Save Product", type="primary", width="stretch")
-    cancel_clicked = b2.button("Cancel", width="stretch")
-    delete_clicked = (not is_new) and b3.button("🗑️ Delete Product", width="stretch")
-
-    if cancel_clicked:
-        st.rerun()
-
-    if delete_clicked:
-        delete_product_db(product_id)
-        st.rerun()
-
-    if save_clicked:
-        data = {
-            "sku": sku, "icon": icon, "product": product_name, "description": description,
-            "where_used": where_used, "characteristics": characteristics,
-            "source_origin": source_origin, "batch_lot": batch_lot, "sds_hazard_class": sds_hazard_class,
-            "temp_range": temp_range, "cure_time": cure_time, "mix_ratio": mix_ratio,
-            "suppliers": suppliers, "price": price, "discount": discount, "transport_price": transport_price,
-            "expiring_date": str(expiring_date), "delivery_time": delivery_time, "ubication": ubication,
-            "monthly_usage": monthly_usage, "min_stock": min_stock, "quantity": quantity,
-        }
-        if photo_file is not None:
-            data["photo_path"] = save_uploaded_file(photo_file, IMAGES_DIR, sku or "product")
-        if datasheet_file is not None:
-            data["datasheet_path"] = save_uploaded_file(datasheet_file, DATASHEETS_DIR, sku or "product")
-
-        if is_new:
-            new_id = insert_product(data)
-            if quantity:
-                add_stock_entry_db(new_id, str(date.today()), quantity, price, "Initial creation")
-        else:
-            update_product(product_id, data)
-        st.rerun()
-
-
-# ----------------------------------------------------------------------------
-# MAIN UI
-# ----------------------------------------------------------------------------
-st.title("📦 Material Inventory Management System")
-
-with st.sidebar:
-    st.success("Logged in")
-    if st.button("🚪 Log out", width="stretch"):
-        st.session_state.authenticated = False
-        st.rerun()
-    st.divider()
-    if st.button("➕ Add New Product", width="stretch", type="primary"):
-        product_dialog(None)
-    st.divider()
-    search_val = st.text_input("🔍 Search", placeholder="Product, SKU, supplier...")
-    sort_option = st.selectbox("Sort by", [
-        "Default", "Low Stock First", "High Stock First", "Cost: Low to High",
-        "Cost: High to Low", "Name A-Z", "Earliest Expiration",
-    ])
-    st.divider()
-    export_df = get_all_products()
-    if not export_df.empty:
-        csv_bytes = export_df.drop(columns=["photo_path", "datasheet_path"], errors="ignore").to_csv(index=False).encode("utf-8")
-        st.download_button("⬇️ Export CSV", csv_bytes, file_name="material_inventory_export.csv", width="stretch")
-
-df = get_all_products()
-
-if search_val:
-    s = search_val.lower()
-    mask = df.apply(
-        lambda r: s in str(r.get("product", "")).lower()
-        or s in str(r.get("sku", "")).lower()
-        or s in str(r.get("suppliers", "")).lower()
-        or s in str(r.get("characteristics", "")).lower()
-        or s in str(r.get("ubication", "")).lower(),
+    df["landed_cost"] = df.apply(
+        lambda r: calc_landed_cost(r["price"], r["discount"], r["transport_price"]),
         axis=1,
     )
-    df = df[mask]
+    return df
 
-if sort_option == "Low Stock First":
-    df = df.assign(_gap=df["quantity"] - df["min_stock"]).sort_values("_gap")
-elif sort_option == "High Stock First":
-    df = df.sort_values("quantity", ascending=False)
-elif sort_option == "Cost: Low to High":
-    df = df.sort_values("price", ascending=True)
-elif sort_option == "Cost: High to Low":
-    df = df.sort_values("price", ascending=False)
-elif sort_option == "Name A-Z":
-    df = df.sort_values("product", ascending=True)
-elif sort_option == "Earliest Expiration":
-    df = df.sort_values("expiring_date", ascending=True)
 
-tab_cards, tab_table = st.tabs(["🗂️ Cards", "📊 Table"])
+df_products = load_products()
 
-with tab_cards:
-    if df.empty:
-        st.info("No products matched your search.")
-    else:
-        cols_per_row = 3
-        for start in range(0, len(df), cols_per_row):
-            chunk = df.iloc[start:start + cols_per_row]
-            cols = st.columns(cols_per_row)
-            for col, (_, item) in zip(cols, chunk.iterrows()):
-                with col:
-                    with st.container(border=True):
-                        photo_path = item.get("photo_path")
-                        if photo_path and os.path.exists(os.path.join(BASE_DIR, photo_path)):
-                            st.image(os.path.join(BASE_DIR, photo_path), width="stretch")
-                        else:
-                            st.markdown(
-                                "<div style='height:120px;background:#1e293b;color:#94a3b8;"
-                                "display:flex;align-items:center;justify-content:center;"
-                                "border-radius:8px;font-size:12px;font-weight:700;'>NO PHOTO</div>",
-                                unsafe_allow_html=True,
-                            )
-                        is_low = (item["quantity"] or 0) <= (item["min_stock"] or 0)
-                        badge = "🚨 LOW STOCK" if is_low else "🟢 OK"
-                        st.markdown(
-                            f"**{item.get('icon') or '📦'} {item['product']}**  \n"
-                            f"<span style='font-size:12px;color:#64748b'>{item['sku']}</span>  \n"
-                            f"{badge}",
-                            unsafe_allow_html=True,
-                        )
-                        st.caption((item.get("description") or "")[:120])
-                        m1, m2 = st.columns(2)
-                        m1.metric("Quantity", f"{item['quantity']:g}")
-                        m2.metric("Landed Cost", f"€{calc_landed_cost(item['price'], item['discount'], item['transport_price']):.2f}")
-                        st.caption(f"📍 {item.get('ubication') or '-'}   🏭 {item.get('suppliers') or '-'}")
-                        if st.button("📄 Open / Edit", key=f"open_{item['id']}", width="stretch"):
-                            product_dialog(int(item["id"]))
+# Top Search & Sort Bar
+col_search, col_sort = st.columns([3, 1])
 
-with tab_table:
-    if df.empty:
-        st.info("No products matched your search.")
-    else:
-        show_cols = ["sku", "icon", "product", "suppliers", "price", "discount", "transport_price",
-                     "expiring_date", "delivery_time", "ubication", "monthly_usage", "min_stock", "quantity"]
-        display_df = df[show_cols].copy()
-        display_df["landed_cost"] = df.apply(
-            lambda r: calc_landed_cost(r["price"], r["discount"], r["transport_price"]), axis=1
+with col_search:
+    search_query = st.text_input(
+        txt["search_lbl"], placeholder=txt["search_ph"]
+    ).lower()
+
+with col_sort:
+    sort_option = st.selectbox(
+        txt["sort_lbl"],
+        options=[
+            "Default",
+            "Low Stock First",
+            "High Stock First",
+            "Landed Cost: Low to High",
+            "Landed Cost: High to Low",
+            "Name: A-Z",
+        ],
+    )
+
+# Filter Dataset
+filtered_df = df_products.copy()
+
+if search_query:
+    filtered_df = filtered_df[
+        filtered_df.apply(
+            lambda row: search_query in row.astype(str).str.lower().str.cat(sep=" "),
+            axis=1,
         )
-        st.dataframe(display_df, width="stretch", hide_index=True)
-        st.caption("Open a product from the Cards tab to edit its details or manage stock entries.")
+    ]
+
+# Apply Sorting
+if sort_option == "Low Stock First":
+    filtered_df["stock_diff"] = filtered_df["quantity"] - filtered_df["min_stock"]
+    filtered_df = filtered_df.sort_values("stock_diff", ascending=True)
+elif sort_option == "High Stock First":
+    filtered_df = filtered_df.sort_values("quantity", ascending=False)
+elif sort_option == "Landed Cost: Low to High":
+    filtered_df = filtered_df.sort_values("landed_cost", ascending=True)
+elif sort_option == "Landed Cost: High to Low":
+    filtered_df = filtered_df.sort_values("landed_cost", ascending=False)
+elif sort_option == "Name: A-Z":
+    filtered_df = filtered_df.sort_values("product", ascending=True)
+
+# -----------------------------------------------------------------------------
+# MAIN APP TABS
+# -----------------------------------------------------------------------------
+tab1, tab2 = st.tabs([txt["tab1"], txt["tab2"]])
+
+# -----------------------------------------------------------------------------
+# TAB 1: CARDS & INTERACTIVE MODAL DETAILED VIEW
+# -----------------------------------------------------------------------------
+with tab1:
+    if st.button(txt["add_btn"], type="primary"):
+        conn = get_db_connection()
+        cur = conn.cursor()
+        new_sku = f"MAT-NEW-{int(datetime.now().timestamp())}"
+        cur.execute(
+            """
+            INSERT INTO products (sku, product, quantity, min_stock, price)
+            VALUES (?, ?, ?, ?, ?)
+        """,
+            (
+                new_sku,
+                "Nuevo Material" if es else "New Material",
+                10.0,
+                5.0,
+                10.00,
+            ),
+        )
+        conn.commit()
+        conn.close()
+        st.rerun()
+
+    st.write("---")
+
+    # Render Product Cards Grid (3 Columns)
+    cols = st.columns(3)
+    for idx, row in filtered_df.reset_index().iterrows():
+        col = cols[idx % 3]
+        with col:
+            is_low = row["quantity"] <= row["min_stock"]
+            badge = txt["low_stock"] if is_low else txt["ok_stock"]
+
+            with st.container(border=True):
+                # Product Photo Thumbnail or Placeholder
+                if row["photo_path"] and os.path.exists(row["photo_path"]):
+                    st.image(row["photo_path"], use_container_width=True)
+                else:
+                    st.markdown(
+                        f"<div style='height:120px; background:#1e293b; color:#94a3b8; display:flex; align-items:center; justify-content:center; border-radius:8px; font-weight:bold; font-size:24px;'>{row['icon']} {row['product'][:15]}</div>",
+                        unsafe_allow_html=True,
+                    )
+
+                st.subheader(f"{row['icon']} {row['product']}")
+                st.caption(f"SKU: {row['sku']} | {badge}")
+
+                st.write(
+                    f"📍 **{'Ubicación' if es else 'Location'}:** {row['ubication']}"
+                )
+                st.write(
+                    f"📦 **{'Cantidad Total' if es else 'Total Qty'}:** `{row['quantity']}`"
+                )
+                st.write(f"💶 **{txt['landed']}:** `€{row['landed_cost']}`")
+
+                # Open Detailed View Modal Button
+                if st.button(
+                    f"📄 {'Ficha & Entradas' if es else 'Details & History'}",
+                    key=f"card_btn_{row['id']}",
+                ):
+                    st.session_state["selected_product_id"] = row["id"]
+
+# -----------------------------------------------------------------------------
+# DETAILED PRODUCT MODAL DIALOG
+# -----------------------------------------------------------------------------
+if "selected_product_id" in st.session_state:
+    p_id = st.session_state["selected_product_id"]
+
+    conn = get_db_connection()
+    product = conn.execute(
+        "SELECT * FROM products WHERE id = ?", (p_id,)
+    ).fetchone()
+
+    if product:
+
+        @st.dialog(
+            f"{product['icon']} {product['product']}",
+            width="large",
+        )
+        def product_modal():
+            st.caption(
+                f"SKU: {product['sku']} | Ubicación: {product['ubication']}"
+            )
+
+            # --- 1. MEDIA & FILES SECTION ---
+            st.markdown("### 🖼️ Photo & Technical Datasheet")
+            col_img, col_pdf = st.columns(2)
+
+            with col_img:
+                if product["photo_path"] and os.path.exists(
+                    product["photo_path"]
+                ):
+                    st.image(
+                        product["photo_path"],
+                        caption="Product Photo",
+                        use_container_width=True,
+                    )
+
+                uploaded_img = st.file_uploader(
+                    "Upload Photo (PNG/JPG)", type=["png", "jpg", "jpeg"]
+                )
+                if uploaded_img:
+                    img_path = os.path.join(IMAGES_DIR, f"prod_{p_id}.png")
+                    with open(img_path, "wb") as f:
+                        f.write(uploaded_img.getbuffer())
+                    conn.execute(
+                        "UPDATE products SET photo_path = ? WHERE id = ?",
+                        (img_path, p_id),
+                    )
+                    conn.commit()
+                    st.success("Photo updated!")
+                    st.rerun()
+
+            with col_pdf:
+                if product["datasheet_path"] and os.path.exists(
+                    product["datasheet_path"]
+                ):
+                    st.success("🟢 Technical Datasheet Attached")
+                    with open(product["datasheet_path"], "rb") as pdf_file:
+                        st.download_button(
+                            "📥 Download Datasheet PDF",
+                            pdf_file,
+                            file_name=f"{product['sku']}_datasheet.pdf",
+                        )
+
+                uploaded_pdf = st.file_uploader(
+                    "Upload Datasheet (PDF)", type=["pdf"]
+                )
+                if uploaded_pdf:
+                    pdf_path = os.path.join(DATASHEETS_DIR, f"pdf_{p_id}.pdf")
+                    with open(pdf_path, "wb") as f:
+                        f.write(uploaded_pdf.getbuffer())
+                    conn.execute(
+                        "UPDATE products SET datasheet_path = ? WHERE id = ?",
+                        (pdf_path, p_id),
+                    )
+                    conn.commit()
+                    st.success("Datasheet saved!")
+                    st.rerun()
+
+            st.write("---")
+
+            # --- 2. MULTIPLE STOCK ENTRIES HISTORY ---
+            st.markdown(f"### {txt['entries_sec']}")
+
+            # Fetch entries
+            entries = conn.execute(
+                "SELECT * FROM stock_entries WHERE product_id = ? ORDER BY entry_date DESC",
+                (p_id,),
+            ).fetchall()
+            if entries:
+                entries_df = pd.DataFrame(
+                    [dict(e) for e in entries]
+                )[["entry_date", "quantity", "price", "note"]]
+                st.dataframe(entries_df, use_container_width=True)
+
+            # Add New Entry Form
+            with st.expander("➕ Register New Entry (Añadir Entrada)"):
+                with st.form(key=f"add_entry_form_{p_id}"):
+                    c1, c2, c3 = st.columns(3)
+                    e_date = c1.date_input("Date", value=datetime.now())
+                    e_qty = c2.number_input(
+                        "Quantity", value=float(product["quantity"])
+                    )
+                    e_price = c3.number_input(
+                        "Price (€)", value=float(product["price"])
+                    )
+                    e_note = st.text_input("Note / Comment", value="Restock")
+
+                    if st.form_submit_button("Add Entry"):
+                        conn.execute(
+                            """
+                            INSERT INTO stock_entries (product_id, entry_date, quantity, price, note)
+                            VALUES (?, ?, ?, ?, ?)
+                        """,
+                            (
+                                p_id,
+                                e_date.strftime("%Y-%m-%d"),
+                                e_qty,
+                                e_price,
+                                e_note,
+                            ),
+                        )
+
+                        # Update product totals
+                        conn.execute(
+                            """
+                            UPDATE products SET quantity = ?, price = ? WHERE id = ?
+                        """,
+                            (e_qty, e_price, p_id),
+                        )
+                        conn.commit()
+                        st.success("Entry added!")
+                        st.rerun()
+
+            st.write("---")
+
+            # --- 3. EDIT PRODUCT MASTER DETAILS FORM ---
+            st.markdown("### 📘 Master Details & Pricing")
+            with st.form(key=f"edit_prod_form_{p_id}"):
+                col_a, col_b = st.columns(2)
+                f_name = col_a.text_input("Product Name", value=product["product"])
+                f_icon = col_b.text_input("Icon (Emoji)", value=product["icon"])
+
+                f_desc = st.text_area(
+                    "Description / Breakdown", value=product["description"]
+                )
+                f_char = st.text_area(
+                    "Characteristics / Packaging",
+                    value=product["characteristics"],
+                )
+                f_where = st.text_area(
+                    "Where Used (Process)", value=product["where_used"]
+                )
+
+                c1, c2, c3 = st.columns(3)
+                f_price = c1.number_input(
+                    "Base Price (€)", value=float(product["price"])
+                )
+                f_disc = c2.number_input(
+                    "Discount (%)", value=float(product["discount"])
+                )
+                f_trans = c3.number_input(
+                    "Transport Fee (€)", value=float(product["transport_price"])
+                )
+
+                c4, c5, c6 = st.columns(3)
+                f_qty = c4.number_input(
+                    "Total Quantity", value=float(product["quantity"])
+                )
+                f_min = c5.number_input(
+                    "Min Stock Level", value=int(product["min_stock"])
+                )
+                f_ubic = c6.text_input("Ubication", value=product["ubication"])
+
+                btn_save = st.form_submit_button(
+                    txt["save_btn"], type="primary"
+                )
+
+                if btn_save:
+                    conn.execute(
+                        """
+                        UPDATE products SET 
+                            product = ?, icon = ?, description = ?, characteristics = ?,
+                            where_used = ?, price = ?, discount = ?, transport_price = ?,
+                            quantity = ?, min_stock = ?, ubication = ?
+                        WHERE id = ?
+                    """,
+                        (
+                            f_name,
+                            f_icon,
+                            f_desc,
+                            f_char,
+                            f_where,
+                            f_price,
+                            f_disc,
+                            f_trans,
+                            f_qty,
+                            f_min,
+                            f_ubic,
+                            p_id,
+                        ),
+                    )
+                    conn.commit()
+                    st.success("Saved successfully!")
+                    st.rerun()
+
+            # Delete Option
+            if st.button(txt["delete_btn"], type="secondary"):
+                conn.execute("DELETE FROM products WHERE id = ?", (p_id,))
+                conn.commit()
+                del st.session_state["selected_product_id"]
+                st.rerun()
+
+        product_modal()
+
+    conn.close()
+
+# -----------------------------------------------------------------------------
+# TAB 2: EDITABLE SPREADSHEET MASTER TABLE
+# -----------------------------------------------------------------------------
+with tab2:
+    st.markdown("### 📊 Master Editable Grid")
+
+    # Display Streamlit Data Editor
+    edited_df = st.data_editor(
+        filtered_df[
+            [
+                "id",
+                "icon",
+                "sku",
+                "product",
+                "characteristics",
+                "suppliers",
+                "price",
+                "discount",
+                "transport_price",
+                "landed_cost",
+                "quantity",
+                "min_stock",
+                "ubication",
+            ]
+        ],
+        disabled=["id", "sku", "landed_cost"],
+        use_container_width=True,
+        hide_index=True,
+    )
+
+    if st.button("💾 Apply Grid Edits to Database"):
+        conn = get_db_connection()
+        for idx, r in edited_df.iterrows():
+            conn.execute(
+                """
+                UPDATE products SET
+                    icon = ?, product = ?, characteristics = ?, suppliers = ?,
+                    price = ?, discount = ?, transport_price = ?,
+                    quantity = ?, min_stock = ?, ubication = ?
+                WHERE id = ?
+            """,
+                (
+                    r["icon"],
+                    r["product"],
+                    r["characteristics"],
+                    r["suppliers"],
+                    r["price"],
+                    r["discount"],
+                    r["transport_price"],
+                    r["quantity"],
+                    r["min_stock"],
+                    r["ubication"],
+                    r["id"],
+                ),
+            )
+        conn.commit()
+        conn.close()
+        st.success("Database updated!")
+        st.rerun()
