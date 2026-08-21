@@ -18,7 +18,7 @@ st.set_page_config(
 )
 
 BASE_DIR = tempfile.gettempdir()
-DB_FILE = os.path.join(BASE_DIR, "inventory_v8.db")
+DB_FILE = os.path.join(BASE_DIR, "inventory_v9.db")
 IMAGES_DIR = os.path.join(BASE_DIR, "inventory_images")
 DATASHEETS_DIR = os.path.join(BASE_DIR, "inventory_datasheets")
 
@@ -389,22 +389,19 @@ def safe_path_exists(path):
 
 
 # -----------------------------------------------------------------------------
-# ADVANCED MULTI-SHEET EXCEL EXPORT & IMPORT (SHEET PER PRODUCT)
+# ADVANCED MULTI-SHEET EXCEL EXPORT & IMPORT
 # -----------------------------------------------------------------------------
 def export_database_to_multi_sheet_excel():
-    """Generates an Excel workbook with a Master Inventory sheet AND an individual sheet for each product's entry history."""
     with get_db_connection() as conn:
         products_df = pd.read_sql_query("SELECT * FROM products", conn)
         entries_df = pd.read_sql_query("SELECT * FROM stock_entries", conn)
 
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
-        # Sheet 1: Master Summary
         products_df.to_excel(
             writer, sheet_name="Master_Inventory", index=False
         )
 
-        # Individual Sheets for Each Product's Entry Log
         for _, prod in products_df.iterrows():
             prod_entries = entries_df[entries_df["product_id"] == prod["id"]]
             sheet_title = sanitize_filename(f"{prod['product']}")
@@ -426,7 +423,6 @@ def export_database_to_multi_sheet_excel():
 
 
 def import_excel_to_database(uploaded_file):
-    """Imports master products and individual product entry sheets back into SQLite."""
     try:
         excel_file = pd.ExcelFile(uploaded_file)
 
@@ -436,15 +432,12 @@ def import_excel_to_database(uploaded_file):
                 conn.execute("DELETE FROM products")
                 conn.execute("DELETE FROM stock_entries")
 
-                # Restore Products
                 p_df.to_sql("products", conn, if_exists="append", index=False)
 
-                # Re-fetch new product IDs
                 db_prods = pd.read_sql_query(
                     "SELECT id, product FROM products", conn
                 )
 
-                # Restore entries from individual sheets
                 for _, prod_row in db_prods.iterrows():
                     sheet_title = sanitize_filename(f"{prod_row['product']}")
                     if sheet_title in excel_file.sheet_names:
@@ -466,23 +459,29 @@ def import_excel_to_database(uploaded_file):
 
 
 # -----------------------------------------------------------------------------
-# TOP HEADER & DEFAULT ENGLISH EMOJI LANGUAGE SWITCHER
+# TOP HEADER & TWO SPLIT LANGUAGE BUTTONS (ENGLISH DEFAULT)
 # -----------------------------------------------------------------------------
 if "current_lang" not in st.session_state:
-    st.session_state["current_lang"] = "en"
+    st.session_state["current_lang"] = "en"  # Default set to English
 
-col_header, col_lang = st.columns([5, 1])
+col_header, col_en, col_es = st.columns([4, 1, 1])
 
-with col_lang:
-    lang_btn_text = (
-        "🇪🇸 Español"
-        if st.session_state["current_lang"] == "en"
-        else "🇬🇧 English"
+# English Language Button Box
+with col_en:
+    btn_type_en = (
+        "primary" if st.session_state["current_lang"] == "en" else "secondary"
     )
-    if st.button(lang_btn_text, key="top_lang_switcher", type="secondary"):
-        st.session_state["current_lang"] = (
-            "es" if st.session_state["current_lang"] == "en" else "en"
-        )
+    if st.button("🇬🇧 English", key="lang_btn_en", type=btn_type_en):
+        st.session_state["current_lang"] = "en"
+        st.rerun()
+
+# Spanish Language Button Box
+with col_es:
+    btn_type_es = (
+        "primary" if st.session_state["current_lang"] == "es" else "secondary"
+    )
+    if st.button("🇪🇸 Español", key="lang_btn_es", type=btn_type_es):
+        st.session_state["current_lang"] = "es"
         st.rerun()
 
 es = st.session_state["current_lang"] == "es"
@@ -780,7 +779,6 @@ if "selected_product_id" in st.session_state:
 
             st.write("---")
 
-            # Stock Entries History
             st.markdown(f"### {txt['entries_sec']}")
 
             with get_db_connection() as conn:
