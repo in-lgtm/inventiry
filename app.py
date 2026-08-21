@@ -18,7 +18,7 @@ st.set_page_config(
 )
 
 BASE_DIR = tempfile.gettempdir()
-DB_FILE = os.path.join(BASE_DIR, "inventory_v7.db")
+DB_FILE = os.path.join(BASE_DIR, "inventory_v8.db")
 IMAGES_DIR = os.path.join(BASE_DIR, "inventory_images")
 DATASHEETS_DIR = os.path.join(BASE_DIR, "inventory_datasheets")
 
@@ -39,8 +39,9 @@ def get_db_connection():
 
 
 def sanitize_filename(name):
-    """Sanitizes product names to be safe for filenames."""
-    return re.sub(r"[^\w\-_]", "_", name)
+    """Sanitizes names to be safe for filenames and Excel sheet titles (max 31 chars)."""
+    clean = re.sub(r"[^\w\-_]", "_", name)
+    return clean[:30]
 
 
 def init_db():
@@ -171,7 +172,7 @@ def init_db():
                     "Elastic and industrial partition sealing.",
                     "Hubei, China",
                     "LOT-HUI-600X",
-                    "Irritant",
+                    "Irritante",
                 ),
                 (
                     "🧪",
@@ -388,48 +389,87 @@ def safe_path_exists(path):
 
 
 # -----------------------------------------------------------------------------
-# EXCEL IMPORT / EXPORT HELPERS
+# ADVANCED MULTI-SHEET EXCEL EXPORT & IMPORT (SHEET PER PRODUCT)
 # -----------------------------------------------------------------------------
-def export_database_to_excel():
+def export_database_to_multi_sheet_excel():
+    """Generates an Excel workbook with a Master Inventory sheet AND an individual sheet for each product's entry history."""
     with get_db_connection() as conn:
         products_df = pd.read_sql_query("SELECT * FROM products", conn)
         entries_df = pd.read_sql_query("SELECT * FROM stock_entries", conn)
 
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
-        products_df.to_excel(writer, sheet_name="Products", index=False)
-        entries_df.to_excel(writer, sheet_name="Stock_Entries", index=False)
+        # Sheet 1: Master Summary
+        products_df.to_excel(
+            writer, sheet_name="Master_Inventory", index=False
+        )
+
+        # Individual Sheets for Each Product's Entry Log
+        for _, prod in products_df.iterrows():
+            prod_entries = entries_df[entries_df["product_id"] == prod["id"]]
+            sheet_title = sanitize_filename(f"{prod['product']}")
+
+            if prod_entries.empty:
+                prod_entries = pd.DataFrame(
+                    columns=["entry_date", "quantity", "price", "note"]
+                )
+            else:
+                prod_entries = prod_entries[
+                    ["entry_date", "quantity", "price", "note"]
+                ]
+
+            prod_entries.to_excel(
+                writer, sheet_name=sheet_title, index=False
+            )
 
     return output.getvalue()
 
 
 def import_excel_to_database(uploaded_file):
+    """Imports master products and individual product entry sheets back into SQLite."""
     try:
         excel_file = pd.ExcelFile(uploaded_file)
-        if "Products" in excel_file.sheet_names:
-            p_df = pd.read_excel(excel_file, sheet_name="Products")
+
+        if "Master_Inventory" in excel_file.sheet_names:
+            p_df = pd.read_excel(excel_file, sheet_name="Master_Inventory")
             with get_db_connection() as conn:
                 conn.execute("DELETE FROM products")
+                conn.execute("DELETE FROM stock_entries")
+
+                # Restore Products
                 p_df.to_sql("products", conn, if_exists="append", index=False)
 
-        if "Stock_Entries" in excel_file.sheet_names:
-            e_df = pd.read_excel(excel_file, sheet_name="Stock_Entries")
-            with get_db_connection() as conn:
-                conn.execute("DELETE FROM stock_entries")
-                e_df.to_sql(
-                    "stock_entries", conn, if_exists="append", index=False
+                # Re-fetch new product IDs
+                db_prods = pd.read_sql_query(
+                    "SELECT id, product FROM products", conn
                 )
 
-        return True, "Database imported successfully!"
+                # Restore entries from individual sheets
+                for _, prod_row in db_prods.iterrows():
+                    sheet_title = sanitize_filename(f"{prod_row['product']}")
+                    if sheet_title in excel_file.sheet_names:
+                        e_df = pd.read_excel(
+                            excel_file, sheet_name=sheet_title
+                        )
+                        if not e_df.empty:
+                            e_df["product_id"] = prod_row["id"]
+                            e_df.to_sql(
+                                "stock_entries",
+                                conn,
+                                if_exists="append",
+                                index=False,
+                            )
+
+        return True, "Multi-sheet database successfully imported!"
     except Exception as err:
-        return False, f"Import failed: {str(err)}"
+        return False, f"Import error: {str(err)}"
 
 
 # -----------------------------------------------------------------------------
 # TOP HEADER & DEFAULT ENGLISH EMOJI LANGUAGE SWITCHER
 # -----------------------------------------------------------------------------
 if "current_lang" not in st.session_state:
-    st.session_state["current_lang"] = "en"  # Default set to English
+    st.session_state["current_lang"] = "en"
 
 col_header, col_lang = st.columns([5, 1])
 
@@ -472,47 +512,17 @@ txt = {
         else "📅 Stock Entry History (Multiple Records)"
     ),
     "export_btn": (
-        "📥 Exportar Base de Datos (Excel)"
+        "📥 Descargar Excel (Con Hojas por Producto)"
         if es
-        else "📥 Export Database (Excel)"
+        else "📥 Download Excel (With Sheet Per Product)"
     ),
     "import_btn": (
-        "📤 Importar Base de Datos (Excel)"
-        if es
-        else "📤 Import Database (Excel)"
+        "📤 Cargar Excel Completo" if es else "📤 Upload Multi-Sheet Excel"
     ),
 }
 
 with col_header:
     st.title(txt["title"])
-
-# -----------------------------------------------------------------------------
-# TOP EXCEL IMPORT / EXPORT BAR
-# -----------------------------------------------------------------------------
-col_exp, col_imp = st.columns([1, 1])
-
-with col_exp:
-    excel_data = export_database_to_excel()
-    st.download_button(
-        label=txt["export_btn"],
-        data=excel_data,
-        file_name=f"inventory_database_export_{datetime.now().strftime('%Y%m%d')}.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        use_container_width=True,
-    )
-
-with col_imp:
-    imported_file = st.file_uploader(
-        txt["import_btn"], type=["xlsx"], label_visibility="collapsed"
-    )
-    if imported_file is not None:
-        if st.button("Confirm Excel Import", type="primary"):
-            success, msg = import_excel_to_database(imported_file)
-            if success:
-                st.success(msg)
-                st.rerun()
-            else:
-                st.error(msg)
 
 
 # -----------------------------------------------------------------------------
@@ -578,6 +588,7 @@ elif sort_option == "Name: A-Z":
 # -----------------------------------------------------------------------------
 tab1, tab2 = st.tabs([txt["tab1"], txt["tab2"]])
 
+# TAB 1: CARDS VIEW
 with tab1:
     if st.button(txt["add_btn"], type="primary"):
         with get_db_connection() as conn:
@@ -634,8 +645,90 @@ with tab1:
                 ):
                     st.session_state["selected_product_id"] = row["id"]
 
+# TAB 2: MASTER GRID VIEW & EXCEL EXPANDER
+with tab2:
+    with st.expander("📂 Import / Export Multi-Sheet Excel Workbook"):
+        col_ex_b, col_im_b = st.columns(2)
+
+        with col_ex_b:
+            excel_bytes = export_database_to_multi_sheet_excel()
+            st.download_button(
+                label=txt["export_btn"],
+                data=excel_bytes,
+                file_name=f"full_inventory_with_product_sheets_{datetime.now().strftime('%Y%m%d')}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True,
+            )
+
+        with col_im_b:
+            up_file = st.file_uploader(
+                txt["import_btn"], type=["xlsx"], key="excel_uploader_tab2"
+            )
+            if up_file is not None:
+                if st.button("Apply Excel Import", type="primary"):
+                    ok, msg = import_excel_to_database(up_file)
+                    if ok:
+                        st.success(msg)
+                        st.rerun()
+                    else:
+                        st.error(msg)
+
+    st.markdown("### 📊 Master Editable Grid")
+
+    edited_df = st.data_editor(
+        filtered_df[
+            [
+                "id",
+                "icon",
+                "sku",
+                "product",
+                "characteristics",
+                "suppliers",
+                "price",
+                "discount",
+                "transport_price",
+                "landed_cost",
+                "quantity",
+                "min_stock",
+                "ubication",
+            ]
+        ],
+        disabled=["id", "sku", "landed_cost"],
+        use_container_width=True,
+        hide_index=True,
+    )
+
+    if st.button("💾 Apply Grid Edits to Database"):
+        with get_db_connection() as conn:
+            for idx, r in edited_df.iterrows():
+                conn.execute(
+                    """
+                    UPDATE products SET
+                        icon = ?, product = ?, characteristics = ?, suppliers = ?,
+                        price = ?, discount = ?, transport_price = ?,
+                        quantity = ?, min_stock = ?, ubication = ?
+                    WHERE id = ?
+                """,
+                    (
+                        r["icon"],
+                        r["product"],
+                        r["characteristics"],
+                        r["suppliers"],
+                        r["price"],
+                        r["discount"],
+                        r["transport_price"],
+                        r["quantity"],
+                        r["min_stock"],
+                        r["ubication"],
+                        r["id"],
+                    ),
+                )
+            conn.commit()
+        st.success("Database updated!")
+        st.rerun()
+
 # -----------------------------------------------------------------------------
-# DETAILED PRODUCT MODAL WITH NAMED SAVES & NO AUTO-LOOPING
+# DETAILED PRODUCT MODAL
 # -----------------------------------------------------------------------------
 if "selected_product_id" in st.session_state:
     p_id = st.session_state["selected_product_id"]
@@ -663,7 +756,7 @@ if "selected_product_id" in st.session_state:
                 if safe_path_exists(product["photo_path"]):
                     st.image(
                         product["photo_path"],
-                        caption="Current Product Photo",
+                        caption="Current Photo",
                         use_container_width=True,
                     )
 
@@ -687,7 +780,7 @@ if "selected_product_id" in st.session_state:
 
             st.write("---")
 
-            # --- MULTIPLE STOCK ENTRIES HISTORY ---
+            # Stock Entries History
             st.markdown(f"### {txt['entries_sec']}")
 
             with get_db_connection() as conn:
@@ -766,7 +859,6 @@ if "selected_product_id" in st.session_state:
 
             st.write("---")
 
-            # --- MASTER DETAILS FORM WITH EXPLICIT NAMED FILE SAVES ---
             st.markdown("### 📘 Master Details & Pricing")
             with st.form(key=f"edit_prod_form_{p_id}"):
                 col_a, col_b = st.columns(2)
@@ -868,61 +960,3 @@ if "selected_product_id" in st.session_state:
                 st.rerun()
 
         product_modal()
-
-# -----------------------------------------------------------------------------
-# TAB 2: EDITABLE SPREADSHEET MASTER TABLE
-# -----------------------------------------------------------------------------
-with tab2:
-    st.markdown("### 📊 Master Editable Grid")
-
-    edited_df = st.data_editor(
-        filtered_df[
-            [
-                "id",
-                "icon",
-                "sku",
-                "product",
-                "characteristics",
-                "suppliers",
-                "price",
-                "discount",
-                "transport_price",
-                "landed_cost",
-                "quantity",
-                "min_stock",
-                "ubication",
-            ]
-        ],
-        disabled=["id", "sku", "landed_cost"],
-        use_container_width=True,
-        hide_index=True,
-    )
-
-    if st.button("💾 Apply Grid Edits to Database"):
-        with get_db_connection() as conn:
-            for idx, r in edited_df.iterrows():
-                conn.execute(
-                    """
-                    UPDATE products SET
-                        icon = ?, product = ?, characteristics = ?, suppliers = ?,
-                        price = ?, discount = ?, transport_price = ?,
-                        quantity = ?, min_stock = ?, ubication = ?
-                    WHERE id = ?
-                """,
-                    (
-                        r["icon"],
-                        r["product"],
-                        r["characteristics"],
-                        r["suppliers"],
-                        r["price"],
-                        r["discount"],
-                        r["transport_price"],
-                        r["quantity"],
-                        r["min_stock"],
-                        r["ubication"],
-                        r["id"],
-                    ),
-                )
-            conn.commit()
-        st.success("Database updated!")
-        st.rerun()
