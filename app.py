@@ -2,12 +2,13 @@ import io
 import os
 import re
 import sqlite3
+import tempfile
 from datetime import datetime
 import pandas as pd
 import streamlit as st
 
 # -----------------------------------------------------------------------------
-# APP CONFIG & LOCAL REPOSITORY DIRECTORY SETUP
+# APP CONFIG & SAFE DIRECTORY SETUP
 # -----------------------------------------------------------------------------
 st.set_page_config(
     page_title="Material Inventory System",
@@ -16,7 +17,6 @@ st.set_page_config(
     initial_sidebar_state="collapsed",
 )
 
-# Store files directly in your GitHub repository folder structure
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_FILE = os.path.join(BASE_DIR, "inventory.db")
 IMAGES_DIR = os.path.join(BASE_DIR, "images")
@@ -30,7 +30,7 @@ for directory in [IMAGES_DIR, DATASHEETS_DIR]:
 
 
 # -----------------------------------------------------------------------------
-# DATABASE INITIALIZATION & HELPERS
+# DATABASE INITIALIZATION & SCHEMA MIGRATION HELPERS
 # -----------------------------------------------------------------------------
 def get_db_connection():
     conn = sqlite3.connect(DB_FILE, check_same_thread=False)
@@ -48,6 +48,21 @@ def init_db():
     with get_db_connection() as conn:
         cursor = conn.cursor()
 
+        # Check if products table exists with old schema, reset if column mismatch
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='products'")
+        table_exists = cursor.fetchone()
+
+        if table_exists:
+            cursor.execute("PRAGMA table_info(products)")
+            columns = [column[1] for cursor_col in [cursor.fetchall()] for column in cursor_col]
+            required_cols = ["sds_hazard_class", "source_origin", "batch_lot", "where_used"]
+            
+            # If schema is missing new fields, recreate cleanly
+            if not all(col in columns for col in required_cols):
+                cursor.execute("DROP TABLE IF EXISTS products")
+                cursor.execute("DROP TABLE IF EXISTS stock_entries")
+
+        # Table 1: Products
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS products (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -75,6 +90,7 @@ def init_db():
             )
         """)
 
+        # Table 2: Multiple Entries / Stock History
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS stock_entries (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
