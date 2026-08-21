@@ -16,7 +16,7 @@ st.set_page_config(
 )
 
 BASE_DIR = tempfile.gettempdir()
-DB_FILE = os.path.join(BASE_DIR, "inventory_v4.db")
+DB_FILE = os.path.join(BASE_DIR, "inventory_v5.db")
 IMAGES_DIR = os.path.join(BASE_DIR, "inventory_images")
 DATASHEETS_DIR = os.path.join(BASE_DIR, "inventory_datasheets")
 
@@ -379,8 +379,13 @@ def calc_landed_cost(price, discount, transport):
     return round((price * (1 - discount / 100.0)) + transport, 2)
 
 
+# Safe Path Exist Checker Helper
+def safe_path_exists(path):
+    return path is not None and bool(path) and os.path.exists(str(path))
+
+
 # -----------------------------------------------------------------------------
-# TOP HEADER & TOP-RIGHT EMOJI LANGUAGE SWITCHER
+# TOP HEADER & EMOJI LANGUAGE SWITCHER
 # -----------------------------------------------------------------------------
 if "current_lang" not in st.session_state:
     st.session_state["current_lang"] = "es"
@@ -525,7 +530,8 @@ with tab1:
             badge = txt["low_stock"] if is_low else txt["ok_stock"]
 
             with st.container(border=True):
-                if row["photo_path"] and os.path.exists(row["photo_path"]):
+                # Safe Image Exist Check
+                if safe_path_exists(row["photo_path"]):
                     st.image(row["photo_path"], use_container_width=True)
                 else:
                     st.markdown(
@@ -576,9 +582,7 @@ if "selected_product_id" in st.session_state:
             col_img, col_pdf = st.columns(2)
 
             with col_img:
-                if product["photo_path"] and os.path.exists(
-                    product["photo_path"]
-                ):
+                if safe_path_exists(product["photo_path"]):
                     st.image(
                         product["photo_path"],
                         caption="Product Photo",
@@ -602,9 +606,7 @@ if "selected_product_id" in st.session_state:
                     st.rerun()
 
             with col_pdf:
-                if product["datasheet_path"] and os.path.exists(
-                    product["datasheet_path"]
-                ):
+                if safe_path_exists(product["datasheet_path"]):
                     st.success("🟢 Technical Datasheet Attached")
                     with open(product["datasheet_path"], "rb") as pdf_file:
                         st.download_button(
@@ -650,14 +652,12 @@ if "selected_product_id" in st.session_state:
                     e_col3.write(f"💶 `€{entry['price']:.2f}`")
                     e_col4.caption(f"{entry['note'] or '-'}")
 
-                    # Inline Delete Button for each entry
                     if e_col5.button("🗑️", key=f"del_entry_{entry['id']}"):
                         with get_db_connection() as conn:
                             conn.execute(
                                 "DELETE FROM stock_entries WHERE id = ?",
                                 (entry["id"],),
                             )
-                            # Re-fetch latest remaining entry to auto-adjust total quantity
                             rem_entries = conn.execute(
                                 "SELECT * FROM stock_entries WHERE product_id = ? ORDER BY entry_date DESC",
                                 (p_id,),
@@ -672,7 +672,6 @@ if "selected_product_id" in st.session_state:
                         st.success("Entry removed!")
                         st.rerun()
 
-            # Form to register new stock entry
             with st.expander("➕ Register New Entry (Añadir Entrada)"):
                 with st.form(key=f"add_entry_form_{p_id}"):
                     c1, c2, c3 = st.columns(3)
