@@ -32,15 +32,34 @@ import streamlit as st
 SOURCE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 
-def safe_makedirs(path: str):
-    """os.makedirs(..., exist_ok=True) that also tolerates the FileExistsError
-    race that can happen when multiple Streamlit sessions/threads try to
-    create the same folder at the same instant."""
+def ensure_dir(path: str, _depth: int = 0) -> str:
+    """
+    Return a writable directory at `path`. Handles two real-world failure
+    modes seen on hosted platforms:
+      1. A race where multiple sessions/threads create the same folder at
+         once (os.makedirs(exist_ok=True) can still raise in that window).
+      2. Something already exists at `path` but is a *file*, not a folder
+         (e.g. it got uploaded to the repo as a plain file named "images"
+         instead of a real images/ directory). In that case we fall back
+         to an alternate directory name rather than crashing.
+    """
+    if os.path.isdir(path):
+        return path
+    if os.path.exists(path) and not os.path.isdir(path):
+        if _depth > 5:
+            raise OSError(f"Could not find or create a usable directory near {path}")
+        alt = path.rstrip("/\\") + "_data"
+        return ensure_dir(alt, _depth + 1)
     try:
         os.makedirs(path, exist_ok=True)
+        return path
     except FileExistsError:
-        if not os.path.isdir(path):
+        if os.path.isdir(path):
+            return path
+        if _depth > 5:
             raise
+        alt = path.rstrip("/\\") + "_data"
+        return ensure_dir(alt, _depth + 1)
 
 
 def _resolve_data_dir() -> str:
@@ -65,24 +84,21 @@ def _resolve_data_dir() -> str:
 
     for candidate in candidates:
         try:
-            safe_makedirs(candidate)
-            probe = os.path.join(candidate, ".write_test")
+            resolved = ensure_dir(candidate)
+            probe = os.path.join(resolved, ".write_test")
             with open(probe, "w") as f:
                 f.write("ok")
             os.remove(probe)
-            return candidate
+            return resolved
         except OSError:
             continue
-    return tempfile.gettempdir()
+    return tempfile.mkdtemp(prefix="material_inventory_")
 
 
 BASE_DIR = _resolve_data_dir()
 DB_PATH = os.path.join(BASE_DIR, "inventory.db")
-IMAGES_DIR = os.path.join(BASE_DIR, "images")
-DATASHEETS_DIR = os.path.join(BASE_DIR, "datasheets")
-
-safe_makedirs(IMAGES_DIR)
-safe_makedirs(DATASHEETS_DIR)
+IMAGES_DIR = ensure_dir(os.path.join(BASE_DIR, "images"))
+DATASHEETS_DIR = ensure_dir(os.path.join(BASE_DIR, "datasheets"))
 
 # Password: can be overridden via .streamlit/secrets.toml with APP_PASSWORD = "..."
 # Falls back to the password below so the app works immediately out of the box.
